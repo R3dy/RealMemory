@@ -1,5 +1,5 @@
 import { mkdirSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname, resolve, join } from "node:path";
 import { homedir } from "node:os";
 import type {
   Memory,
@@ -28,6 +28,7 @@ import { runMigrations } from "./db/schema";
 import { generateUlid } from "./db/ulid";
 import { scrubSecrets } from "./scrub";
 import { computeWeight } from "./weighting";
+import { loadConfig, validateConfig } from "./config";
 
 const DEFAULT_STORAGE_PATH = resolve(
   homedir(),
@@ -133,10 +134,13 @@ export class MemoryStore {
   private db: DbConnection | null = null;
 
   constructor(config?: MemoryStoreConfig) {
+    // If no config provided, load from config files merged with defaults.
+    const loaded = config ?? loadConfig();
+    validateConfig(loaded);
     this.config = {
       decayHalfLifeDays: 30,
       archiveThreshold: 0.05,
-      ...config,
+      ...loaded,
     };
   }
 
@@ -149,9 +153,11 @@ export class MemoryStore {
   }
 
   async init(): Promise<void> {
-    const storagePath = resolve(
-      this.config.storagePath ?? DEFAULT_STORAGE_PATH,
-    );
+    const rawPath = this.config.storagePath ?? DEFAULT_STORAGE_PATH;
+    // Expand a leading ~ to the user's home directory.
+    const storagePath = rawPath.startsWith("~")
+      ? join(homedir(), rawPath.slice(1))
+      : resolve(rawPath);
     const dir = dirname(storagePath);
     mkdirSync(dir, { recursive: true });
 
