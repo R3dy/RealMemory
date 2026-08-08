@@ -194,6 +194,8 @@ export interface MemoryWithRelations {
  */
 export interface MemoryStoreConfig {
   storagePath?: string;
+  /** Project identifier used for project-scoped memories. null/undefined = global scope only. */
+  projectId?: string | null;
   embeddingModel?: string;
   embeddingApiUrl?: string;
   embeddingApiKey?: string;
