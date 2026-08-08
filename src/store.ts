@@ -388,8 +388,88 @@ export class MemoryStore {
     throw new NotImplementedError("recall");
   }
 
-  async search(_query: SearchQuery): Promise<SearchResult> {
-    throw new NotImplementedError("search");
+  async search(query: SearchQuery): Promise<SearchResult> {
+    const db = this.requireDb();
+
+    const where: string[] = ["status = 'active'"];
+    const params: unknown[] = [];
+
+    // Scope filter.
+    const scope = query.scope ?? "all";
+    if (scope === "project") {
+      const pid = this.config.projectId ?? null;
+      where.push("project_id IS ?");
+      params.push(pid);
+    } else if (scope === "global") {
+      where.push("project_id IS NULL");
+    }
+    // "all" → no scope filter.
+
+    // Types filter (multiple).
+    if (query.types && query.types.length > 0) {
+      const placeholders = query.types.map(() => "?").join(", ");
+      where.push(`type IN (${placeholders})`);
+      params.push(...query.types);
+    }
+
+    // Tags filter (OR semantics — match any of the provided tags).
+    if (query.tags && query.tags.length > 0) {
+      const tagClauses = query.tags.map(() => "tags LIKE ?");
+      where.push(`(${tagClauses.join(" OR ")})`);
+      for (const tag of query.tags) {
+        params.push(`%"${tag.replace(/[%_\\]/g, (c) => "\\" + c)}"%`);
+      }
+    }
+
+    // minWeight filter.
+    if (typeof query.minWeight === "number") {
+      where.push("weight >= ?");
+      params.push(query.minWeight);
+    }
+
+    // createdAfter / createdBefore.
+    if (query.createdAfter) {
+      where.push("created_at >= ?");
+      params.push(query.createdAfter);
+    }
+    if (query.createdBefore) {
+      where.push("created_at <= ?");
+      params.push(query.createdBefore);
+    }
+
+    const whereSql = where.join(" AND ");
+    const limit = query.limit ?? DEFAULT_LIMIT;
+    const offset = query.offset ?? 0;
+
+    // Sorting.
+    const sortBy = query.sortBy ?? "weight";
+    const sortOrder = query.sortOrder ?? "desc";
+    const sortColumn =
+      sortBy === "created"
+        ? "created_at"
+        : sortBy === "updated"
+          ? "updated_at"
+          : sortBy === "confidence"
+            ? "confidence"
+            : "weight";
+    const sortDir = sortOrder === "asc" ? "ASC" : "DESC";
+
+    // Total count.
+    const countRow = db
+      .prepare(`SELECT COUNT(*) AS c FROM memories WHERE ${whereSql}`)
+      .get(...params) as { c: number } | undefined;
+    const total = countRow?.c ?? 0;
+
+    // Page.
+    const rows = db
+      .prepare(
+        `SELECT * FROM memories WHERE ${whereSql} ORDER BY ${sortColumn} ${sortDir} LIMIT ? OFFSET ?`,
+      )
+      .all(...params, limit, offset) as unknown as MemoryRow[];
+
+    const memories = rows.map(rowToMemory);
+
+    return { memories, total, offset, limit };
   }
 
   async relate(
@@ -400,8 +480,107 @@ export class MemoryStore {
     throw new NotImplementedError("relate");
   }
 
-  async update(_id: string, _patch: UpdatePatch): Promise<Memory> {
-    throw new NotImplementedError("update");
+  async update(id: string, patch: UpdatePatch): Promise<Memory> {
+    const db = this.requireDb();
+
+    // 1. Load the existing active memory.
+    const row = db
+      .prepare("SELECT * FROM memories WHERE id = ? AND status = 'active'")
+      .get(id) as MemoryRow | undefined;
+    if (!row) {
+      throw new MemoryNotFoundError(id);
+    }
+
+    // 2. Validate confidence if provided.
+    if (
+      typeof patch.confidence === "number" &&
+      (Number.isNaN(patch.confidence) ||
+        patch.confidence < 0 ||
+        patch.confidence > 1)
+    ) {
+      throw new InvalidConfidenceError(patch.confidence);
+    }
+
+    // 3. Build the set clauses.
+    const sets: string[] = [];
+    const params: unknown[] = [];
+
+    // content (scrubbed).
+    if (typeof patch.content === "string") {
+      const content = scrubSecrets(patch.content);
+      sets.push("content = ?");
+      params.push(content);
+    }
+
+    // confidence (explicit patch value; may be overridden by reinforce below).
+    let newConfidence: number | undefined;
+    if (typeof patch.confidence === "number") {
+      newConfidence = patch.confidence;
+    }
+
+    // tags (replace, not merge).
+    if (Array.isArray(patch.tags)) {
+      sets.push("tags = ?");
+      params.push(JSON.stringify(patch.tags));
+    }
+
+    // metadata (merge with existing).
+    if (patch.metadata && typeof patch.metadata === "object") {
+      let existingMetadata: Record<string, unknown> = {};
+      try {
+        const parsed = JSON.parse(row.metadata) as unknown;
+        if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+          existingMetadata = parsed as Record<string, unknown>;
+        }
+      } catch {
+        existingMetadata = {};
+      }
+      const mergedMetadata: Record<string, unknown> = {
+        ...existingMetadata,
+        ...patch.metadata,
+      };
+      sets.push("metadata = ?");
+      params.push(JSON.stringify(mergedMetadata));
+    }
+
+    // 4. Reinforce: bump reinforcement_count + boost confidence (diminishing returns).
+    let reinforcementIncrement = 0;
+    if (patch.reinforce === true) {
+      reinforcementIncrement = 1;
+      const base = typeof newConfidence === "number" ? newConfidence : row.confidence;
+      newConfidence = base + 0.1 * (1 - base);
+      // Clamp to [0, 1] to guard against floating-point drift at the extremes.
+      if (newConfidence > 1) newConfidence = 1;
+      if (newConfidence < 0) newConfidence = 0;
+    }
+
+    if (typeof newConfidence === "number") {
+      sets.push("confidence = ?");
+      params.push(newConfidence);
+    }
+
+    if (reinforcementIncrement > 0) {
+      sets.push("reinforcement_count = reinforcement_count + ?");
+      params.push(reinforcementIncrement);
+    }
+
+    // 5. Always update updated_at.
+    const now = new Date().toISOString();
+    sets.push("updated_at = ?");
+    params.push(now);
+
+    // 6. Execute the UPDATE.
+    params.push(id);
+    db.prepare(`UPDATE memories SET ${sets.join(", ")} WHERE id = ?`).run(...params);
+
+    // 7. Re-read and return.
+    const updated = db
+      .prepare("SELECT * FROM memories WHERE id = ?")
+      .get(id) as MemoryRow | undefined;
+    if (!updated) {
+      throw new MemoryStoreError(`Failed to read back updated memory: ${id}`);
+    }
+    return rowToMemory(updated);
   }
 
   async decay(): Promise<void> {
