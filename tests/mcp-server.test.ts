@@ -91,7 +91,7 @@ describe("store_memory tool", () => {
     const result = (await tool.handler({
       content: "Always use tabs.",
       type: "user_preference",
-    })) as { id: string; content: string };
+    })) as { id: string; content: string; type: string };
     expect(result.id).toHaveLength(26);
     expect(result.content).toBe("Always use tabs.");
     expect(result.type).toBe("user_preference");
@@ -167,7 +167,7 @@ describe("relate tool", () => {
       sourceId: a.id,
       targetId: b.id,
       type: "extends",
-    })) as { id: string; sourceId: string; targetId: string };
+    })) as { id: string; sourceId: string; targetId: string; type: string };
     expect(result.sourceId).toBe(a.id);
     expect(result.targetId).toBe(b.id);
     expect(result.type).toBe("extends");
