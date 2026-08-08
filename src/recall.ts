@@ -11,6 +11,10 @@ import type { MemoryStore } from "./store";
 export class RecallEngine {
   constructor(private store: MemoryStore) {}
 
+  /**
+   * Delegate to {@link MemoryStore.recall}. Returns ranked results with
+   * one-hop related memories attached.
+   */
   async recall(query: RecallQuery): Promise<RecallResult[]> {
     return this.store.recall(query);
   }

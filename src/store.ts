@@ -148,6 +148,16 @@ function joinRowToEdge(row: JoinRow, memoryId: string): RelationshipEdge {
   };
 }
 
+/**
+ * The core persistent-memory store. Backed by SQLite (with full-text and
+ * optional vector-embedding indexes), it owns the full memory lifecycle:
+ * store, get, list, search, recall, relate, update, forget, decay, close.
+ *
+ * Construct with a {@link MemoryStoreConfig} (which skips file-based config
+ * loading) or with no argument (which loads config from the standard files
+ * merged with defaults). Call {@link MemoryStore.init} before any other
+ * method, and {@link MemoryStore.close} when done.
+ */
 export class MemoryStore {
   private config: MemoryStoreConfig;
   private db: DbConnection | null = null;
@@ -172,6 +182,12 @@ export class MemoryStore {
     return this.config.archiveThreshold ?? 0.05;
   }
 
+  /**
+   * Open the database, run migrations, and initialize the embedding provider.
+   * Must be called exactly once before any other method. A failure to load a
+   * local ONNX model degrades gracefully to keyword-only recall rather than
+   * throwing.
+   */
   async init(): Promise<void> {
     const rawPath = this.config.storagePath ?? DEFAULT_STORAGE_PATH;
     // Expand a leading ~ to the user's home directory.
@@ -193,6 +209,12 @@ export class MemoryStore {
     this.embeddingProvider = await createEmbeddingProvider(this.config);
   }
 
+  /**
+   * Store a new memory. Validates type and confidence, scrubs secrets from
+   * content, computes the initial composite weight, inserts the row, computes
+   * and persists its embedding (best-effort, never blocks on failure), and
+   * creates any supplied relationships. Returns the canonical Memory record.
+   */
   async store(input: StoreInput): Promise<Memory> {
     const db = this.requireDb();
 
@@ -296,6 +318,12 @@ export class MemoryStore {
     return rowToMemory(stored);
   }
 
+  /**
+   * Fetch a single active memory by ID. When `includeRelationships` is true
+   * (default), the returned object carries one-hop outgoing and incoming
+   * relationship edges. Throws {@link MemoryNotFoundError} if the ID does not
+   * exist or has been archived.
+   */
   async get(id: string, includeRelationships = true): Promise<MemoryWithRelations> {
     const db = this.requireDb();
 
@@ -351,6 +379,10 @@ export class MemoryStore {
     return { memory, relationships };
   }
 
+  /**
+   * Browse active memories with simple filters and pagination. Returns a page
+   * with the total count, ordered by weight descending.
+   */
   async list(query: ListQuery): Promise<ListResult> {
     const db = this.requireDb();
 
@@ -412,6 +444,13 @@ export class MemoryStore {
     return { memories, total, offset, limit };
   }
 
+  /**
+   * Forget a memory. Soft-archive (default) sets `status = 'archived'` and
+   * cascades the relationship deletion; a no-op if already archived. Hard
+   * delete (`hard = true`) removes the row entirely. Returns the count of
+   * relationships removed. Throws {@link MemoryNotFoundError} if the ID does
+   * not exist.
+   */
   async forget(id: string, hard = false): Promise<ForgetResult> {
     const db = this.requireDb();
 
@@ -452,6 +491,14 @@ export class MemoryStore {
     return { id, archived: true, relationshipsRemoved };
   }
 
+  /**
+   * Recall memories relevant to a natural-language query. Uses semantic
+   * (cosine-similarity) recall when an embedding provider is available, and
+   * falls back to FTS5 keyword (bm25) recall otherwise. Results are ranked by
+   * `relevance × storedWeight`, their `accessCount` is bumped and weight
+   * recomputed, and one-hop related memories are attached when `traverse` is
+   * true (default). Applies scope/type/tag filters and a relevance threshold.
+   */
   async recall(query: RecallQuery): Promise<RecallResult[]> {
     const db = this.requireDb();
 
@@ -754,6 +801,12 @@ export class MemoryStore {
     return new Set(rows.map((r) => r.id));
   }
 
+  /**
+   * Structured search with filters (scope, types, tags, minWeight, date
+   * range), sorting (weight/created/updated/confidence), and pagination.
+   * Unlike {@link recall}, search does not embed the query or traverse
+   * relationships — it is a deterministic filtered query.
+   */
   async search(query: SearchQuery): Promise<SearchResult> {
     const db = this.requireDb();
 
@@ -842,6 +895,14 @@ export class MemoryStore {
     return { memories, total, offset, limit };
   }
 
+  /**
+   * Create a typed, directed relationship between two active memories.
+   * Rejects self-relationships and duplicate (source, target, type) triples.
+   * `reinforces` boosts the source's confidence (diminishing returns) and
+   * bumps its `reinforcementCount`; `contradicts` decays the target's
+   * confidence by 10% of its current value. Both recompute the affected
+   * memory's weight. The other types are structural only.
+   */
   async relate(
     sourceId: string,
     targetId: string,
@@ -959,6 +1020,13 @@ export class MemoryStore {
     };
   }
 
+  /**
+   * Patch an existing active memory. Content is scrubbed; tags are replaced
+   * (not merged); metadata is merged with existing. `reinforce: true` bumps
+   * `reinforcementCount` and boosts confidence (diminishing returns). Any
+   * confidence change recomputes the composite weight. Throws
+   * {@link MemoryNotFoundError} / {@link InvalidConfidenceError} as appropriate.
+   */
   async update(id: string, patch: UpdatePatch): Promise<Memory> {
     const db = this.requireDb();
 
@@ -1077,6 +1145,12 @@ export class MemoryStore {
     return rowToMemory(updated);
   }
 
+  /**
+   * Recompute every active memory's composite weight and archive any whose
+   * weight has dropped below the configured `archiveThreshold`. Call this on a
+   * timer in a long-lived app to keep the store from accumulating stale,
+   * low-weight memories.
+   */
   async decay(): Promise<void> {
     const db = this.requireDb();
 
@@ -1119,6 +1193,7 @@ export class MemoryStore {
     }
   }
 
+  /** Close the database handle. Safe to call multiple times; no-op if already closed. */
   async close(): Promise<void> {
     if (this.db) {
       this.db.close();

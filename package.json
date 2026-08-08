@@ -3,7 +3,27 @@
   "version": "0.1.0",
   "type": "module",
   "license": "MIT",
-  "description": "Persistent agent memory — an OpenCode plugin and MCP server.",
+  "description": "An OpenCode plugin that gives AI agents real persistent memory — a weighted, indexed database that stores what agents learn across sessions and recalls it automatically.",
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "memory",
+    "agent-memory",
+    "persistent-memory",
+    "mcp",
+    "vector-search",
+    "semantic-search",
+    "ai-agent",
+    "knowledge-graph"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/R3dy/RealMemory.git"
+  },
+  "homepage": "https://github.com/R3dy/RealMemory",
+  "engines": {
+    "node": ">=18"
+  },
   "bin": {
     "realmemory-mcp": "dist/bin.js"
   },

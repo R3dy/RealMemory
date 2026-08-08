@@ -130,6 +130,7 @@ const getMemorySchema = z.object({
 // Tool descriptor
 // ---------------------------------------------------------------------------
 
+/** A single MCP tool descriptor: name, description, JSON-Schema input, and handler. */
 export interface McpToolHandler {
   name: string;
   description: string;
