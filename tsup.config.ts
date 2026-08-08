@@ -5,5 +5,5 @@ export default defineConfig({
   format: ["esm", "cjs"],
   dts: true,
   clean: true,
-  external: ["bun:sqlite", "better-sqlite3"],
+  external: ["bun:sqlite", "better-sqlite3", "@huggingface/transformers"],
 });

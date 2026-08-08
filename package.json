@@ -41,6 +41,7 @@
     "vitest": "^2.0.0"
   },
   "dependencies": {
+    "@huggingface/transformers": "^4.2.0",
     "better-sqlite3": "^13.0.3"
   }
 }
