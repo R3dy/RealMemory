@@ -279,8 +279,8 @@ describe("MemoryStore.search()", () => {
   it("filters by minWeight", async () => {
     const store = await freshStore({ projectId: "proj-1" });
     await seed(store);
-    const res = await store.search({ minWeight: 0.5 });
-    expect(res.memories.every((m) => m.weight >= 0.5)).toBe(true);
+    const res = await store.search({ minWeight: 0.2 });
+    expect(res.memories.every((m) => m.weight >= 0.2)).toBe(true);
     expect(res.memories).toHaveLength(2);
     await store.close();
   });

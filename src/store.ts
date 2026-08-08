@@ -27,6 +27,7 @@ import { openDatabase } from "./db/dialect";
 import { runMigrations } from "./db/schema";
 import { generateUlid } from "./db/ulid";
 import { scrubSecrets } from "./scrub";
+import { computeWeight } from "./weighting";
 
 const DEFAULT_STORAGE_PATH = resolve(
   homedir(),
@@ -132,7 +133,19 @@ export class MemoryStore {
   private db: DbConnection | null = null;
 
   constructor(config?: MemoryStoreConfig) {
-    this.config = config ?? {};
+    this.config = {
+      decayHalfLifeDays: 30,
+      archiveThreshold: 0.05,
+      ...config,
+    };
+  }
+
+  private get decayHalfLifeDays(): number {
+    return this.config.decayHalfLifeDays ?? 30;
+  }
+
+  private get archiveThreshold(): number {
+    return this.config.archiveThreshold ?? 0.05;
   }
 
   async init(): Promise<void> {
@@ -178,8 +191,12 @@ export class MemoryStore {
     const tagsJson = JSON.stringify(input.tags ?? []);
     const metadataJson = JSON.stringify(input.metadata ?? {});
 
-    // 8. Initial weight = confidence.
-    const weight = confidence;
+    // 8. Initial composite weight (relevance = 1.0 at store time; no query context yet).
+    const weight = computeWeight(
+      { createdAt: now, accessCount: 0, reinforcementCount: 0, confidence },
+      1.0,
+      { decayHalfLifeDays: this.decayHalfLifeDays },
+    );
 
     // 9. INSERT.
     db.prepare(
@@ -564,6 +581,21 @@ export class MemoryStore {
       params.push(reinforcementIncrement);
     }
 
+    // 4b. Recompute weight when reinforcing (or when confidence changed).
+    if (patch.reinforce === true || typeof newConfidence === "number") {
+      const projectedMemory = {
+        createdAt: row.created_at,
+        accessCount: row.access_count,
+        reinforcementCount: row.reinforcement_count + reinforcementIncrement,
+        confidence: typeof newConfidence === "number" ? newConfidence : row.confidence,
+      };
+      const newWeight = computeWeight(projectedMemory, 1.0, {
+        decayHalfLifeDays: this.decayHalfLifeDays,
+      });
+      sets.push("weight = ?");
+      params.push(newWeight);
+    }
+
     // 5. Always update updated_at.
     const now = new Date().toISOString();
     sets.push("updated_at = ?");
@@ -584,7 +616,45 @@ export class MemoryStore {
   }
 
   async decay(): Promise<void> {
-    throw new NotImplementedError("decay");
+    const db = this.requireDb();
+
+    const rows = db
+      .prepare(
+        `SELECT id, created_at, access_count, reinforcement_count, confidence
+         FROM memories WHERE status = 'active'`,
+      )
+      .all() as Array<{
+        id: string;
+        created_at: string;
+        access_count: number;
+        reinforcement_count: number;
+        confidence: number;
+      }>;
+
+    const archiveThreshold = this.archiveThreshold;
+    const halfLifeDays = this.decayHalfLifeDays;
+    const archiveStmt = db.prepare(
+      `UPDATE memories SET status = 'archived', weight = ? WHERE id = ?`,
+    );
+    const updateStmt = db.prepare(`UPDATE memories SET weight = ? WHERE id = ?`);
+
+    for (const row of rows) {
+      const weight = computeWeight(
+        {
+          createdAt: row.created_at,
+          accessCount: row.access_count,
+          reinforcementCount: row.reinforcement_count,
+          confidence: row.confidence,
+        },
+        1.0,
+        { decayHalfLifeDays: halfLifeDays },
+      );
+      if (weight < archiveThreshold) {
+        archiveStmt.run(weight, row.id);
+      } else {
+        updateStmt.run(weight, row.id);
+      }
+    }
   }
 
   async close(): Promise<void> {
