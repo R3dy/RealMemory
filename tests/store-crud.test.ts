@@ -47,7 +47,7 @@ describe("MemoryStore.store()", () => {
     expect(mem.type).toBe("user_preference");
     expect(mem.scope).toBe("project");
     expect(mem.tags).toEqual([]);
-    expect(mem.weight).toBe(0.5);
+    expect(mem.weight).toBeCloseTo(0.25, 5);
     expect(mem.confidence).toBe(0.5);
     expect(mem.accessCount).toBe(0);
     expect(mem.reinforcementCount).toBe(0);
@@ -309,8 +309,8 @@ describe("MemoryStore.list()", () => {
   it("filters by minWeight", async () => {
     const store = await freshStore({ projectId: "proj-1" });
     await seed(store);
-    const res = await store.list({ minWeight: 0.6 });
-    expect(res.memories.every((m) => m.weight >= 0.6)).toBe(true);
+    const res = await store.list({ minWeight: 0.3 });
+    expect(res.memories.every((m) => m.weight >= 0.3)).toBe(true);
     expect(res.memories).toHaveLength(2);
     await store.close();
   });
