@@ -11,6 +11,7 @@
 
 import type { MemoryStoreConfig } from "./types";
 
+/** An embedding backend: embed text to a Float32 vector with a known dimensionality. */
 export interface EmbeddingProvider {
   embed(text: string): Promise<Float32Array>;
   readonly dimensions: number;

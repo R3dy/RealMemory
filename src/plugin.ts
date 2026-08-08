@@ -3,6 +3,7 @@ import { loadConfig } from "./config";
 import { deriveProjectId } from "./project-id";
 import type { MemoryStoreConfig, RecallResult, SummaryProviderConfig } from "./types";
 
+/** Shape of the OpenCode plugin context object passed to the plugin entry point. */
 export interface OpenCodePluginContext {
   project: { path?: string; name?: string } | unknown;
   client:
@@ -73,6 +74,18 @@ export function formatRecallResults(results: RecallResult[]): string {
   return lines.join("\n");
 }
 
+/**
+ * OpenCode plugin entry point. Initializes a MemoryStore on first use (with
+ * config loaded relative to `ctx.directory` and a project ID derived from it),
+ * then returns the hook handlers:
+ *   - `event` — auto-recall on `session.created`, auto-summarize on `session.idle`
+ *   - `tool.execute.after` — auto-capture learnings (file reads on config/schema
+ *     files become `codebase_fact`s; bash errors become `lesson_learned`s)
+ *   - `message.updated` — auto-recall on user messages, deduplicated against
+ *     memories already injected this session
+ *
+ * @returns the hook handler map OpenCode installs the plugin's handlers from.
+ */
 export default async function realmemoryPlugin(
   ctx: OpenCodePluginContext,
 ): Promise<Record<string, unknown>> {
