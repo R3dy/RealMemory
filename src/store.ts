@@ -1,3 +1,6 @@
+import { mkdirSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { homedir } from "node:os";
 import type {
   Memory,
   StoreInput,
@@ -15,12 +18,37 @@ import type {
   MemoryStoreConfig,
 } from "./types";
 import { NotImplementedError } from "./errors";
+import type { DbConnection } from "./db/connection";
+import { openDatabase } from "./db/dialect";
+import { runMigrations } from "./db/schema";
+
+const DEFAULT_STORAGE_PATH = resolve(
+  homedir(),
+  ".opencode",
+  "realmemory",
+  "data.db",
+);
 
 export class MemoryStore {
-  constructor(_config?: MemoryStoreConfig) {}
+  private config: MemoryStoreConfig;
+  private db: DbConnection | null = null;
+
+  constructor(config?: MemoryStoreConfig) {
+    this.config = config ?? {};
+  }
 
   async init(): Promise<void> {
-    throw new NotImplementedError("init");
+    const storagePath = resolve(
+      this.config.storagePath ?? DEFAULT_STORAGE_PATH,
+    );
+    const dir = dirname(storagePath);
+    mkdirSync(dir, { recursive: true });
+
+    const db = await openDatabase(storagePath);
+    db.exec("PRAGMA journal_mode = WAL;");
+    db.exec("PRAGMA foreign_keys = ON;");
+    runMigrations(db);
+    this.db = db;
   }
 
   async store(_input: StoreInput): Promise<Memory> {
@@ -67,6 +95,9 @@ export class MemoryStore {
   }
 
   async close(): Promise<void> {
-    throw new NotImplementedError("close");
+    if (this.db) {
+      this.db.close();
+      this.db = null;
+    }
   }
 }
