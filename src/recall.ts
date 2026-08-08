@@ -1,11 +1,17 @@
 import type { RecallQuery, RecallResult } from "./types";
-import { MemoryStore } from "./store";
-import { NotImplementedError } from "./errors";
+import type { MemoryStore } from "./store";
 
+/**
+ * RecallEngine is a thin wrapper around MemoryStore.recall().
+ *
+ * It exists so callers can hold a dedicated recall-focused handle without
+ * exposing the full store CRUD surface, and so future recall strategies
+ * (re-ranking, cross-project federation, etc.) have a natural extension point.
+ */
 export class RecallEngine {
-  constructor(_store: MemoryStore) {}
+  constructor(private store: MemoryStore) {}
 
-  async recall(_query: RecallQuery): Promise<RecallResult[]> {
-    throw new NotImplementedError("recall");
+  async recall(query: RecallQuery): Promise<RecallResult[]> {
+    return this.store.recall(query);
   }
 }

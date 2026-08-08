@@ -20,7 +20,6 @@ import type {
   MemoryType,
   MemoryScope,
 } from "./types";
-import { NotImplementedError } from "./errors";
 import { MemoryStoreError, MemoryNotFoundError, InvalidTypeError, InvalidConfidenceError, DuplicateRelationshipError, SelfRelationshipError } from "./errors";
 import type { DbConnection } from "./db/connection";
 import { openDatabase } from "./db/dialect";
@@ -29,6 +28,9 @@ import { generateUlid } from "./db/ulid";
 import { scrubSecrets } from "./scrub";
 import { computeWeight } from "./weighting";
 import { loadConfig, validateConfig } from "./config";
+import { createEmbeddingProvider } from "./embeddings";
+import type { EmbeddingProvider } from "./embeddings";
+import { cosineSimilarity, embeddingFromBuffer, embeddingToBuffer } from "./similarity";
 
 const DEFAULT_STORAGE_PATH = resolve(
   homedir(),
@@ -47,6 +49,20 @@ const VALID_TYPES: ReadonlySet<MemoryType> = new Set<MemoryType>([
 ]);
 
 const DEFAULT_LIMIT = 50;
+
+/**
+ * Build a safe FTS5 MATCH query string from free text. Splits on whitespace,
+ * strips FTS5 special characters (double quotes, asterisks), and joins tokens
+ * with OR for broad recall. Returns "" when no usable tokens remain.
+ */
+function buildFtsQuery(text: string): string {
+  const tokens = text
+    .split(/\s+/)
+    .map((t) => t.replace(/["*:()\-]/g, ""))
+    .filter((t) => t.length > 0);
+  if (tokens.length === 0) return "";
+  return tokens.map((t) => `"${t}"`).join(" OR ");
+}
 
 /** Row shape as stored in the memories table (snake_case, JSON-encoded fields). */
 interface MemoryRow {
@@ -98,7 +114,10 @@ function rowToMemory(row: MemoryRow): Memory {
 
   let embedding: number[] | undefined;
   if (row.embedding) {
-    embedding = Array.from(row.embedding as unknown as ArrayLike<number>);
+    const vec = embeddingFromBuffer(row.embedding as unknown as Uint8Array);
+    if (vec) {
+      embedding = Array.from(vec);
+    }
   }
 
   return {
@@ -132,6 +151,7 @@ function joinRowToEdge(row: JoinRow, memoryId: string): RelationshipEdge {
 export class MemoryStore {
   private config: MemoryStoreConfig;
   private db: DbConnection | null = null;
+  private embeddingProvider: EmbeddingProvider | null = null;
 
   constructor(config?: MemoryStoreConfig) {
     // If no config provided, load from config files merged with defaults.
@@ -166,6 +186,11 @@ export class MemoryStore {
     db.exec("PRAGMA foreign_keys = ON;");
     runMigrations(db);
     this.db = db;
+
+    // Initialize the embedding provider. A failure to load a local model
+    // (network error, missing ONNX runtime, etc.) returns null and we fall
+    // back to keyword-only recall rather than crashing init.
+    this.embeddingProvider = await createEmbeddingProvider(this.config);
   }
 
   async store(input: StoreInput): Promise<Memory> {
@@ -225,6 +250,22 @@ export class MemoryStore {
       metadataJson,
       projectId,
     );
+
+    // 9b. Embedding (async, best-effort — never block store on failure).
+    if (this.embeddingProvider) {
+      try {
+        const vec = await this.embeddingProvider.embed(content);
+        db.prepare("UPDATE memories SET embedding = ? WHERE id = ?").run(
+          embeddingToBuffer(vec),
+          id,
+        );
+      } catch (err) {
+        // A single embedding failure shouldn't break the store call; the
+        // memory is already persisted and will be matched by keyword fallback.
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn(`[realmemory] Embedding computation failed for ${id}: ${msg}`);
+      }
+    }
 
     // 10. Relationships.
     if (input.relationships && input.relationships.length > 0) {
@@ -411,8 +452,306 @@ export class MemoryStore {
     return { id, archived: true, relationshipsRemoved };
   }
 
-  async recall(_query: RecallQuery): Promise<RecallResult[]> {
-    throw new NotImplementedError("recall");
+  async recall(query: RecallQuery): Promise<RecallResult[]> {
+    const db = this.requireDb();
+
+    const limit = query.limit ?? this.config.maxRecallResults ?? 5;
+    const threshold = query.threshold ?? this.config.recallThreshold ?? 0.3;
+    const maxRelated = this.config.maxRelatedPerMemory ?? 3;
+    const traverse = query.traverse ?? true;
+
+    // Build the structured filter (scope, types, tags) shared by both paths.
+    const { whereSql, params } = this.buildRecallFilter(query);
+
+    // Empty DB fast path.
+    const countRow = db
+      .prepare(`SELECT COUNT(*) AS c FROM memories WHERE ${whereSql}`)
+      .get(...params) as { c: number } | undefined;
+    if ((countRow?.c ?? 0) === 0) return [];
+
+    // ----- Path 1: semantic recall (embedding provider available) -----
+    if (this.embeddingProvider) {
+      return await this.recallSemantic(query, whereSql, params, limit, threshold, maxRelated, traverse);
+    }
+
+    // ----- Path 2: keyword-only recall (FTS5) -----
+    return await this.recallKeyword(query, whereSql, params, limit, threshold, maxRelated, traverse);
+  }
+
+  /**
+   * Build the WHERE clause + params for the structured filters shared by
+   * recall paths: status, scope, types, tags. Does NOT include the FTS MATCH.
+   * `prefix` is applied to column names (e.g. "m.") to avoid ambiguity when
+   * joining memories_fts and memories.
+   */
+  private buildRecallFilter(query: RecallQuery, prefix = ""): { whereSql: string; params: unknown[] } {
+    const where: string[] = [`${prefix}status = 'active'`];
+    const params: unknown[] = [];
+
+    const scope = query.scope ?? "all";
+    if (scope === "project") {
+      const pid = this.config.projectId ?? null;
+      where.push(`${prefix}project_id IS ?`);
+      params.push(pid);
+    } else if (scope === "global") {
+      where.push(`${prefix}project_id IS NULL`);
+    } else {
+      const pid = this.config.projectId ?? null;
+      where.push(`(${prefix}project_id IS ? OR ${prefix}project_id IS NULL)`);
+      params.push(pid);
+    }
+
+    if (query.types && query.types.length > 0) {
+      const placeholders = query.types.map(() => "?").join(", ");
+      where.push(`${prefix}type IN (${placeholders})`);
+      params.push(...query.types);
+    }
+
+    if (query.tags && query.tags.length > 0) {
+      const tagClauses = query.tags.map(() => `${prefix}tags LIKE ?`);
+      where.push(`(${tagClauses.join(" OR ")})`);
+      for (const tag of query.tags) {
+        params.push(`%"${tag.replace(/[%_\\]/g, (c) => "\\" + c)}"%`);
+      }
+    }
+
+    return { whereSql: where.join(" AND "), params };
+  }
+
+  /**
+   * Semantic recall: embed the query, score every matching memory by cosine
+   * similarity, fall back to FTS5 keyword matching for memories without an
+   * stored embedding.
+   */
+  private async recallSemantic(
+    query: RecallQuery,
+    whereSql: string,
+    params: unknown[],
+    limit: number,
+    threshold: number,
+    maxRelated: number,
+    traverse: boolean,
+  ): Promise<RecallResult[]> {
+    const db = this.requireDb();
+    const provider = this.embeddingProvider!;
+    const queryEmbedding = await provider.embed(query.query);
+
+    // Fetch all memories matching the structured filters.
+    const rows = db
+      .prepare(`SELECT * FROM memories WHERE ${whereSql}`)
+      .all(...params) as unknown as MemoryRow[];
+
+    // Separately run FTS5 to discover keyword matches (for memories without
+    // embeddings, and as a relevance signal boost).
+    const keywordIds = await this.ftsMatchIds(query.query, whereSql, params);
+
+    interface Scored {
+      row: MemoryRow;
+      relevance: number;
+      matchedBy: "semantic" | "keyword";
+    }
+    const scored: Scored[] = [];
+
+    for (const row of rows) {
+      const embedding = embeddingFromBuffer(row.embedding as unknown as Uint8Array);
+      if (embedding) {
+        const sim = cosineSimilarity(queryEmbedding, embedding);
+        if (sim < threshold) continue;
+        scored.push({ row, relevance: sim, matchedBy: "semantic" });
+      } else if (keywordIds.has(row.id)) {
+        // No embedding but keyword-matched — baseline relevance below the
+        // semantic threshold so semantic hits always rank higher.
+        const rel = 0.3;
+        if (rel < threshold) continue;
+        scored.push({ row, relevance: rel, matchedBy: "keyword" });
+      }
+    }
+
+    // Rank by finalScore = relevance * storedWeight (equivalent to
+    // computeWeight(memory, relevance, config) since storedWeight uses
+    // relevance=1.0).
+    scored.sort((a, b) => {
+      const fa = a.relevance * a.row.weight;
+      const fb = b.relevance * b.row.weight;
+      return fb - fa;
+    });
+
+    const top = scored.slice(0, limit);
+    if (top.length === 0) return [];
+
+    return this.finalizeRecallResults(top, query.query, traverse, maxRelated);
+  }
+
+  /**
+   * Keyword-only recall: FTS5 bm25 scoring with weight-weighted ranking.
+   * Used when no embedding provider is configured (or failed to load).
+   */
+  private async recallKeyword(
+    query: RecallQuery,
+    _whereSql: string,
+    _params: unknown[],
+    limit: number,
+    threshold: number,
+    maxRelated: number,
+    traverse: boolean,
+  ): Promise<RecallResult[]> {
+    const db = this.requireDb();
+    const ftsQuery = buildFtsQuery(query.query);
+    if (ftsQuery === "") return [];
+
+    // Rebuild the structured filter with the `m.` prefix to avoid ambiguity
+    // between memories_fts.tags and memories.tags.
+    const { whereSql: mWhereSql, params: mParams } = this.buildRecallFilter(query, "m.");
+
+    // We need to join memories_fts with memories to apply the structured
+    // filters AND get the bm25 score. FTS5's bm25() returns negative values
+    // (more negative = better match), so we negate for "higher = better".
+    const rows = db
+      .prepare(
+        `SELECT m.*, bm25(memories_fts) AS fts_score
+         FROM memories_fts
+         JOIN memories m ON m.rowid = memories_fts.rowid
+         WHERE memories_fts MATCH ? AND ${mWhereSql}
+         ORDER BY fts_score ASC
+         LIMIT 100`,
+      )
+      .all(ftsQuery, ...mParams) as unknown as Array<MemoryRow & { fts_score: number }>;
+
+    if (rows.length === 0) return [];
+
+    // Normalize bm25 to a 0..1 relevance score (best match → 1.0).
+    const rawScores = rows.map((r) => -r.fts_score);
+    const maxRaw = Math.max(...rawScores, 1e-9);
+
+    interface Scored {
+      row: MemoryRow & { fts_score: number };
+      relevance: number;
+      matchedBy: "keyword";
+    }
+    const scored: Scored[] = [];
+    for (let i = 0; i < rows.length; i++) {
+      const relevance = rawScores[i] / maxRaw;
+      if (relevance < threshold) continue;
+      scored.push({ row: rows[i], relevance, matchedBy: "keyword" });
+    }
+
+    scored.sort((a, b) => {
+      const fa = a.relevance * a.row.weight;
+      const fb = b.relevance * b.row.weight;
+      return fb - fa;
+    });
+
+    const top = scored.slice(0, limit);
+    if (top.length === 0) return [];
+
+    return this.finalizeRecallResults(top, query.query, traverse, maxRelated);
+  }
+
+  /**
+   * Shared post-processing: build RecallResult objects, bump access_count +
+   * recompute weight, and optionally traverse one-hop relationships.
+   */
+  private async finalizeRecallResults(
+    scored: Array<{ row: MemoryRow; relevance: number; matchedBy: "semantic" | "keyword" }>,
+    _queryText: string,
+    traverse: boolean,
+    maxRelated: number,
+  ): Promise<RecallResult[]> {
+    const db = this.requireDb();
+    const now = new Date().toISOString();
+    const bumpStmt = db.prepare(
+      "UPDATE memories SET access_count = access_count + 1, weight = ?, updated_at = ? WHERE id = ?",
+    );
+
+    const results: RecallResult[] = [];
+    const resultIds = new Set<string>();
+
+    for (const { row, relevance, matchedBy } of scored) {
+      // Recompute weight with the bumped access_count (relevance factor = 1.0
+      // to preserve the stored "intrinsic" weight semantics).
+      const newWeight = computeWeight(
+        {
+          createdAt: row.created_at,
+          accessCount: row.access_count + 1,
+          reinforcementCount: row.reinforcement_count,
+          confidence: row.confidence,
+        },
+        1.0,
+        { decayHalfLifeDays: this.decayHalfLifeDays },
+      );
+      bumpStmt.run(newWeight, now, row.id);
+
+      const memory = rowToMemory({ ...row, access_count: row.access_count + 1, weight: newWeight });
+      resultIds.add(memory.id);
+      results.push({
+        memory,
+        score: relevance * row.weight,
+        matchedBy,
+        related: [],
+      });
+    }
+
+    // Relationship traversal (one-hop, both directions).
+    if (traverse && results.length > 0) {
+      for (const result of results) {
+        const related = this.fetchRelatedMemories(result.memory.id, maxRelated, resultIds);
+        result.related = related;
+        for (const r of related) resultIds.add(r.id);
+      }
+    }
+
+    return results;
+  }
+
+  /**
+   * Fetch one-hop related memories (both outgoing + incoming edges) for a
+   * given memory, excluding IDs already in the `exclude` set, capped at
+   * `maxRelated`.
+   */
+  private fetchRelatedMemories(memoryId: string, maxRelated: number, exclude: Set<string>): Memory[] {
+    const db = this.requireDb();
+    const outRows = db
+      .prepare(
+        `SELECT m.* FROM relationships r
+         JOIN memories m ON m.id = r.target_id AND m.status = 'active'
+         WHERE r.source_id = ?`,
+      )
+      .all(memoryId) as unknown as MemoryRow[];
+    const inRows = db
+      .prepare(
+        `SELECT m.* FROM relationships r
+         JOIN memories m ON m.id = r.source_id AND m.status = 'active'
+         WHERE r.target_id = ?`,
+      )
+      .all(memoryId) as unknown as MemoryRow[];
+
+    const seen = new Set<string>();
+    const related: Memory[] = [];
+    for (const row of [...outRows, ...inRows]) {
+      if (exclude.has(row.id) || seen.has(row.id)) continue;
+      seen.add(row.id);
+      related.push(rowToMemory(row));
+      if (related.length >= maxRelated) break;
+    }
+    return related;
+  }
+
+  /**
+   * Run an FTS5 MATCH against the query text and return the set of memory IDs
+   * that match. Used as the keyword fallback signal in semantic recall.
+   */
+  private async ftsMatchIds(queryText: string, whereSql: string, params: unknown[]): Promise<Set<string>> {
+    const db = this.requireDb();
+    const ftsQuery = buildFtsQuery(queryText);
+    if (ftsQuery === "") return new Set();
+    const rows = db
+      .prepare(
+        `SELECT m.id FROM memories_fts
+         JOIN memories m ON m.rowid = memories_fts.rowid
+         WHERE memories_fts MATCH ? AND ${whereSql}`,
+      )
+      .all(ftsQuery, ...params) as Array<{ id: string }>;
+    return new Set(rows.map((r) => r.id));
   }
 
   async search(query: SearchQuery): Promise<SearchResult> {
