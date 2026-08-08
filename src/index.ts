@@ -2,6 +2,7 @@ export const VERSION = "0.1.0";
 export * from "./types";
 export * from "./errors";
 export { MemoryStore } from "./store";
+export { deriveProjectId } from "./project-id";
 export { computeWeight, computeRecencyFactor, computeFrequencyFactor } from "./weighting";
 export { RecallEngine } from "./recall";
 export { createMcpTools } from "./mcp-server";

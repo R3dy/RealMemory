@@ -318,8 +318,12 @@ export class MemoryStore {
       params.push(pid);
     } else if (scope === "global") {
       where.push("project_id IS NULL");
+    } else {
+      // scope === "all" → current project + global (NOT other projects).
+      const pid = this.config.projectId ?? null;
+      where.push("(project_id IS ? OR project_id IS NULL)");
+      params.push(pid);
     }
-    // "all" → no scope filter.
 
     // Type filter.
     if (query.type) {
@@ -419,8 +423,12 @@ export class MemoryStore {
       params.push(pid);
     } else if (scope === "global") {
       where.push("project_id IS NULL");
+    } else {
+      // scope === "all" → current project + global (NOT other projects).
+      const pid = this.config.projectId ?? null;
+      where.push("(project_id IS ? OR project_id IS NULL)");
+      params.push(pid);
     }
-    // "all" → no scope filter.
 
     // Types filter (multiple).
     if (query.types && query.types.length > 0) {
