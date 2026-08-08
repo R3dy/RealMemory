@@ -9,7 +9,7 @@ export { RecallEngine } from "./recall";
 export { createEmbeddingProvider } from "./embeddings";
 export type { EmbeddingProvider } from "./embeddings";
 export { cosineSimilarity, embeddingFromBuffer, embeddingToBuffer } from "./similarity";
-export { createMcpTools } from "./mcp-server";
+export { createMcpTools, startMcpServer } from "./mcp-server";
 export type { McpToolHandler } from "./mcp-server";
 export { default as realmemoryPlugin } from "./plugin";
 export type { OpenCodePluginContext } from "./plugin";

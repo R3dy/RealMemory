@@ -1,9 +1,14 @@
 import { defineConfig } from "tsup";
 
 export default defineConfig({
-  entry: ["src/index.ts", "src/mcp-server.ts", "src/types.ts"],
+  entry: ["src/index.ts", "src/mcp-server.ts", "src/bin.ts", "src/types.ts"],
   format: ["esm", "cjs"],
   dts: true,
   clean: true,
-  external: ["bun:sqlite", "better-sqlite3", "@huggingface/transformers"],
+  external: [
+    "bun:sqlite",
+    "better-sqlite3",
+    "@huggingface/transformers",
+    "@modelcontextprotocol/sdk",
+  ],
 });
