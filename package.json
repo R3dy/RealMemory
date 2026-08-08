@@ -5,7 +5,7 @@
   "license": "MIT",
   "description": "Persistent agent memory — an OpenCode plugin and MCP server.",
   "bin": {
-    "realmemory-mcp": "dist/mcp-server.js"
+    "realmemory-mcp": "dist/bin.js"
   },
   "exports": {
     ".": {
@@ -42,6 +42,8 @@
   },
   "dependencies": {
     "@huggingface/transformers": "^4.2.0",
-    "better-sqlite3": "^13.0.3"
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "better-sqlite3": "^13.0.3",
+    "zod": "^4.4.3"
   }
 }
