@@ -1,2 +1,9 @@
 export const VERSION = "0.1.0";
 export * from "./types";
+export * from "./errors";
+export { MemoryStore } from "./store";
+export { RecallEngine } from "./recall";
+export { createMcpTools } from "./mcp-server";
+export type { McpToolHandler } from "./mcp-server";
+export { default as realmemoryPlugin } from "./plugin";
+export type { OpenCodePluginContext } from "./plugin";
