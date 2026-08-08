@@ -21,7 +21,7 @@ import type {
   MemoryScope,
 } from "./types";
 import { NotImplementedError } from "./errors";
-import { MemoryStoreError, MemoryNotFoundError, InvalidTypeError, InvalidConfidenceError } from "./errors";
+import { MemoryStoreError, MemoryNotFoundError, InvalidTypeError, InvalidConfidenceError, DuplicateRelationshipError, SelfRelationshipError } from "./errors";
 import type { DbConnection } from "./db/connection";
 import { openDatabase } from "./db/dialect";
 import { runMigrations } from "./db/schema";
@@ -490,11 +490,120 @@ export class MemoryStore {
   }
 
   async relate(
-    _sourceId: string,
-    _targetId: string,
-    _type: RelationshipType,
+    sourceId: string,
+    targetId: string,
+    type: RelationshipType,
   ): Promise<Relationship> {
-    throw new NotImplementedError("relate");
+    const db = this.requireDb();
+
+    // 1. Validate source exists and is active.
+    const sourceRow = db
+      .prepare("SELECT id FROM memories WHERE id = ? AND status = 'active'")
+      .get(sourceId) as { id: string } | undefined;
+    if (!sourceRow) {
+      throw new MemoryNotFoundError(sourceId);
+    }
+
+    // 2. Validate target exists and is active.
+    const targetRow = db
+      .prepare("SELECT id FROM memories WHERE id = ? AND status = 'active'")
+      .get(targetId) as { id: string } | undefined;
+    if (!targetRow) {
+      throw new MemoryNotFoundError(targetId);
+    }
+
+    // 3. Reject self-relationships.
+    if (sourceId === targetId) {
+      throw new SelfRelationshipError(sourceId);
+    }
+
+    // 4. Reject duplicates (same source, target, type).
+    const existing = db
+      .prepare(
+        "SELECT id FROM relationships WHERE source_id = ? AND target_id = ? AND type = ?",
+      )
+      .get(sourceId, targetId, type) as { id: string } | undefined;
+    if (existing) {
+      throw new DuplicateRelationshipError(sourceId, targetId, type);
+    }
+
+    // 5. Insert the relationship edge.
+    const relId = generateUlid();
+    const now = new Date().toISOString();
+    db.prepare(
+      `INSERT INTO relationships (id, source_id, target_id, type, created_at)
+       VALUES (?, ?, ?, ?, ?)`,
+    ).run(relId, sourceId, targetId, type, now);
+
+    // 6. Apply confidence side effects based on relationship type.
+    if (type === "reinforces") {
+      // Boost the SOURCE memory's confidence (diminishing returns) + bump
+      // reinforcement_count, then recompute its weight.
+      const src = db
+        .prepare(
+          "SELECT created_at, access_count, reinforcement_count, confidence FROM memories WHERE id = ?",
+        )
+        .get(sourceId) as {
+          created_at: string;
+          access_count: number;
+          reinforcement_count: number;
+          confidence: number;
+        };
+      const newConfidence = src.confidence + 0.1 * (1 - src.confidence);
+      const clampedConfidence = Math.max(0, Math.min(1, newConfidence));
+      const newReinforcementCount = src.reinforcement_count + 1;
+      const newWeight = computeWeight(
+        {
+          createdAt: src.created_at,
+          accessCount: src.access_count,
+          reinforcementCount: newReinforcementCount,
+          confidence: clampedConfidence,
+        },
+        1.0,
+        { decayHalfLifeDays: this.decayHalfLifeDays },
+      );
+      db.prepare(
+        "UPDATE memories SET reinforcement_count = ?, confidence = ?, weight = ?, updated_at = ? WHERE id = ?",
+      ).run(newReinforcementCount, clampedConfidence, newWeight, now, sourceId);
+    } else if (type === "contradicts") {
+      // Decay the TARGET memory's confidence by 10% of its current value, then
+      // recompute its weight. The SOURCE is unaffected.
+      const tgt = db
+        .prepare(
+          "SELECT created_at, access_count, reinforcement_count, confidence FROM memories WHERE id = ?",
+        )
+        .get(targetId) as {
+          created_at: string;
+          access_count: number;
+          reinforcement_count: number;
+          confidence: number;
+        };
+      const newConfidence = tgt.confidence - 0.1 * tgt.confidence;
+      const clampedConfidence = Math.max(0, Math.min(1, newConfidence));
+      const newWeight = computeWeight(
+        {
+          createdAt: tgt.created_at,
+          accessCount: tgt.access_count,
+          reinforcementCount: tgt.reinforcement_count,
+          confidence: clampedConfidence,
+        },
+        1.0,
+        { decayHalfLifeDays: this.decayHalfLifeDays },
+      );
+      db.prepare(
+        "UPDATE memories SET confidence = ?, weight = ?, updated_at = ? WHERE id = ?",
+      ).run(clampedConfidence, newWeight, now, targetId);
+    }
+    // "extends", "exception_to", "derived_from" — no confidence side effects.
+
+    // 7. Return the Relationship object.
+    return {
+      id: relId,
+      sourceId,
+      targetId,
+      type,
+      createdAt: now,
+    };
   }
 
   async update(id: string, patch: UpdatePatch): Promise<Memory> {
