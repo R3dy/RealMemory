@@ -225,6 +225,8 @@ Then open `http://127.0.0.1:9333` in your browser. You'll see:
 
 The browser reads from the same SQLite database the MCP server uses (`~/.opencode/realmemory/data.db` by default). It can run alongside the MCP server — SQLite's WAL mode allows concurrent reads. The graph visualization uses [vis-network](https://github.com/visjs/vis-network) (MIT), vendored as a static browser-side asset (never a Node.js runtime dependency — the package's `dependencies` stay at three).
 
+> **Screenshot:** a screenshot of the graph browser UI will be added on the v0.2.0 release.
+
 > **Note:** `--ui` and the MCP stdio server are mutually exclusive per process. Run `realmemory-mcp` (no flag) for the stdio MCP server; run `realmemory-mcp --ui` in a separate terminal when you want the browser. This is the same shape `codebase-memory-mcp` uses.
 
 See [ADR-006](../docs/adr/ADR-006-localhost-graph-browser.md) for the architectural rationale and the four hard constraints (opt-in, localhost-only, read-only, no new runtime dependency).

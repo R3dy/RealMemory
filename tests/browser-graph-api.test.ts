@@ -125,12 +125,43 @@ describe("GET /api/graph", () => {
     await store.relate(a.id, b.id, "reinforces");
     await store.relate(a.id, c.id, "extends");
 
-    // Filter to only contextual_note — c is excluded, so the a→c edge should drop.
+    // Filter to only contextual_note — c is excluded, so the a->c edge should drop.
     const res = await request("/api/graph?type=contextual_note");
     const data = JSON.parse(res.body);
     expect(data.nodes).toHaveLength(2);
     expect(data.edges).toHaveLength(1);
     expect(data.edges[0].type).toBe("reinforces");
+  });
+
+  it("does not mutate the store during a full request sweep (read-only)", async () => {
+    const a = await store.store({ content: "sweep test memory alpha", type: "lesson_learned" });
+    const b = await store.store({ content: "sweep test memory beta", type: "codebase_fact" });
+    await store.relate(a.id, b.id, "extends");
+
+    // Snapshot state before the sweep.
+    const beforeA = await store.get(a.id, false);
+    const beforeB = await store.get(b.id, false);
+
+    // Full request sweep — every read endpoint, with and without filters.
+    await request("/api/graph");
+    await request("/api/graph?type=lesson_learned");
+    await request("/api/graph?q=sweep");
+    await request("/api/graph?scope=all&minWeight=0");
+    await request(`/api/memory/${a.id}`);
+    await request(`/api/memory/${b.id}`);
+    await request("/api/stats");
+
+    // Re-read and assert nothing changed — no access_count bump, no weight change,
+    // no updated_at change. This proves no UPDATE/INSERT/DELETE ran during the sweep.
+    const afterA = await store.get(a.id, false);
+    const afterB = await store.get(b.id, false);
+
+    expect(afterA.memory.accessCount).toBe(beforeA.memory.accessCount);
+    expect(afterB.memory.accessCount).toBe(beforeB.memory.accessCount);
+    expect(afterA.memory.weight).toBe(beforeA.memory.weight);
+    expect(afterB.memory.weight).toBe(beforeB.memory.weight);
+    expect(afterA.memory.updatedAt).toBe(beforeA.memory.updatedAt);
+    expect(afterB.memory.updatedAt).toBe(beforeB.memory.updatedAt);
   });
 });
 
