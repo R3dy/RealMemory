@@ -202,6 +202,35 @@ await store.close();
 
 See [`examples/`](./examples) for runnable versions of every major use case.
 
+## Graph browser (`--ui`)
+
+realmemory ships a built-in localhost graph browser for inspecting the memory graph that accumulates in your SQLite database. It is **opt-in, localhost-only, and read-only** — it never starts unless you ask for it, it binds to `127.0.0.1` (never the network), and it cannot mutate the store.
+
+```bash
+# Start the graph browser on the default port (9333):
+npx realmemory-mcp --ui
+
+# Or a custom port:
+npx realmemory-mcp --ui=9400
+# or:
+npx realmemory-mcp --ui --port=9400
+```
+
+Then open `http://127.0.0.1:9333` in your browser. You'll see:
+
+- **A force-directed graph** of your memories (nodes colored by type, sized by weight) and their typed relationships (directed edges colored by relationship type).
+- **A filter sidebar** — filter by memory type, scope, tags, minimum weight, creation date range, and free-text content search.
+- **A detail panel** — click any node to see its full content, metadata, timestamps, and one-hop relationships. Click a neighbor to re-center the graph on it.
+- **A legend** mapping colors to memory types and relationship types.
+
+The browser reads from the same SQLite database the MCP server uses (`~/.opencode/realmemory/data.db` by default). It can run alongside the MCP server — SQLite's WAL mode allows concurrent reads. The graph visualization uses [vis-network](https://github.com/visjs/vis-network) (MIT), vendored as a static browser-side asset (never a Node.js runtime dependency — the package's `dependencies` stay at three).
+
+> **Screenshot:** a screenshot of the graph browser UI will be added on the v0.2.0 release.
+
+> **Note:** `--ui` and the MCP stdio server are mutually exclusive per process. Run `realmemory-mcp` (no flag) for the stdio MCP server; run `realmemory-mcp --ui` in a separate terminal when you want the browser. This is the same shape `codebase-memory-mcp` uses.
+
+See [ADR-006](../docs/adr/ADR-006-localhost-graph-browser.md) for the architectural rationale and the four hard constraints (opt-in, localhost-only, read-only, no new runtime dependency).
+
 ## Comparison with alternatives
 
 - **`MEMORY.md` / `AGENTS.md`** — a reading assignment, not memory. No search, no weighting, no relationships; context cost grows linearly forever.
@@ -217,7 +246,7 @@ realmemory is the only OpenCode plugin that combines (1) a weighted, indexed mem
 1. Fork the repo and clone your fork.
 2. `npm install` — pulls dev dependencies and the native `better-sqlite3` binding.
 3. `npm run build` — builds `dist/` via `tsup` (required for the smoke test, which imports from `dist/`).
-4. `npm test` — runs the vitest suite (currently 251+ tests).
+4. `npm test` — runs the vitest suite (currently 304 tests).
 5. `npm run typecheck` — `tsc --noEmit`.
 6. `npm run lint` — `eslint .`.
 
