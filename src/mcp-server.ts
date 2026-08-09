@@ -6,8 +6,10 @@ import {
   type Tool,
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
+import type { Server as NodeHttpServer } from "node:http";
 import { MemoryStore } from "./store";
 import { loadConfig } from "./config";
+import { startBrowserServer } from "./browser/server";
 import type { MemoryStoreConfig, RelationshipType } from "./types";
 
 /**
@@ -269,4 +271,48 @@ export async function startMcpServer(config?: MemoryStoreConfig): Promise<void> 
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
+
+  // New in v0.3.0 (ADR-007): auto-start the read-only graph browser as a
+  // side channel in THIS process, sharing the single MemoryStore instance.
+  // stdio stays reserved for the MCP JSON-RPC transport (the browser logs to
+  // stderr only); HTTP on TCP 127.0.0.1:9333 never touches stdio. Default-on,
+  // defeatable via `autoStartBrowser: false` config or `--no-browser`.
+  // Best-effort: any failure (port collision, missing asset) logs once to
+  // stderr and continues — a UI-side concern must never fail the MCP server.
+  // The port is the existing default (bin.ts parseArgs, ADR-006); a
+  // `browserPort` config knob is a later increment (issue-12 PARKING_LOT).
+  let browserServer: NodeHttpServer | undefined;
+  if (mergedConfig.autoStartBrowser !== false) {
+    try {
+      browserServer = startBrowserServer(store, {
+        port: 9333,
+        ownLifecycle: false, // the MCP server owns the lifecycle and the shared store
+      });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[realmemory] browser side channel failed to start:", err);
+    }
+  }
+
+  // The MCP server is now the sole closer of both servers and the store.
+  // Registering a SIGINT/SIGTERM listener removes Node's default termination,
+  // and the StdioServerTransport's stdin reader keeps the event loop alive —
+  // without an explicit exit the process would hang holding the SQLite WAL
+  // handle (ADR-007: "a UI-side concern must never crash the MCP server").
+  // process.exit(0) closes that loophole deterministically.
+  const shutdown = async (): Promise<void> => {
+    try {
+      browserServer?.close();
+    } catch {
+      // best-effort
+    }
+    try {
+      await store.close();
+    } catch {
+      // best-effort
+    }
+    process.exit(0);
+  };
+  process.on("SIGINT", () => void shutdown());
+  process.on("SIGTERM", () => void shutdown());
 }

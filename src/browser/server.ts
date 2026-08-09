@@ -20,6 +20,19 @@ export interface GraphEdge {
 
 export interface BrowserServerOptions {
   port: number;
+  /**
+   * When true (default), the browser server owns its process lifecycle: it
+   * installs SIGINT/SIGTERM handlers that close the HTTP server and the store,
+   * then call process.exit(0) for deterministic termination. Use this for the
+   * standalone --ui mode (bin.ts --ui branch).
+   *
+   * When false, the caller owns the lifecycle and the shared store: no signal
+   * handlers are registered, store.close() is NOT called on shutdown, and
+   * process.exit() is NOT called. Use this for the side-channel mode inside
+   * startMcpServer, where the MCP server closes both the stdio server and the
+   * browser HTTP server and closes the store exactly once.
+   */
+  ownLifecycle?: boolean;
 }
 
 const DEFAULT_GRAPH_LIMIT = 500;
@@ -65,14 +78,22 @@ function loadVisNetworkJs(): string {
  * Start the localhost-only, read-only HTTP graph browser server. Binds to
  * 127.0.0.1 exclusively (never 0.0.0.0). Only `GET` is handled; all other
  * methods return `405`. All endpoints are read-only — no mutation of the
- * store. Closes the store on SIGINT/SIGTERM. Returns the underlying
- * `http.Server` (useful for tests).
+ * store. Returns the underlying `http.Server` (useful for tests).
+ *
+ * stdout is reserved for the MCP JSON-RPC stdio transport when this server is
+ * run as a side channel inside the MCP server process, so all diagnostics go
+ * to stderr (console.error) unconditionally. `ownLifecycle` (default `true`)
+ * controls whether the server installs SIGINT/SIGTERM handlers that close the
+ * HTTP server and the store, then call process.exit(0). Pass
+ * `ownLifecycle: false` when the caller owns the lifecycle and the shared
+ * store.
  */
 export function startBrowserServer(
   store: MemoryStore,
   opts: BrowserServerOptions,
 ): Server {
   const visNetworkJs = loadVisNetworkJs();
+  const ownLifecycle = opts.ownLifecycle ?? true;
 
   const server = createServer((req, res) => {
     handleRequest(req, res, store, visNetworkJs).catch((err) => {
@@ -81,19 +102,39 @@ export function startBrowserServer(
     });
   });
 
-  server.listen(opts.port, "127.0.0.1", () => {
+  // Best-effort port collision (ADR-007): a UI-side concern must never crash
+  // the host process. Node delivers listen failures on the Server's "error"
+  // event (not the listen callback), so this handler swallows EADDRINUSE with
+  // a single stderr line and the server simply never listens. The caller
+  // continues without the browser.
+  server.on("error", (err: NodeJS.ErrnoException) => {
+    if (err?.code === "EADDRINUSE") {
+      // eslint-disable-next-line no-console
+      console.error(
+        `[realmemory] browser port ${opts.port} in use; skipping auto-start (use --no-browser to silence)`,
+      );
+      return;
+    }
     // eslint-disable-next-line no-console
-    console.log(`[realmemory] UI server listening on http://127.0.0.1:${opts.port}`);
+    console.error(`[realmemory] browser server error on port ${opts.port}:`, err);
   });
 
-  const shutdown = (): void => {
-    server.close();
-    void store.close();
+  server.listen(opts.port, "127.0.0.1", () => {
     // eslint-disable-next-line no-console
-    console.log("[realmemory] UI server stopped");
-  };
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
+    console.error(`[realmemory] UI server listening on http://127.0.0.1:${opts.port}`);
+  });
+
+  if (ownLifecycle) {
+    const shutdown = (): void => {
+      server.close();
+      void store.close();
+      // eslint-disable-next-line no-console
+      console.error("[realmemory] UI server stopped");
+      process.exit(0);
+    };
+    process.on("SIGINT", shutdown);
+    process.on("SIGTERM", shutdown);
+  }
 
   return server;
 }
