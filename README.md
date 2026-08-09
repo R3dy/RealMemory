@@ -252,6 +252,12 @@ realmemory is the only OpenCode plugin that combines (1) a weighted, indexed mem
 
 Open a PR against `main`. Keep TSDoc on every exported symbol — the build checks for missing docs.
 
+## Changelog
+
+### v0.3.0
+
+- The graph memory browser now auto-starts as a localhost-only side channel when the MCP server loads (ADR-007). It is defeatable via `autoStartBrowser: false` config or the `--no-browser` CLI flag, and adds no new runtime dependency.
+
 ## License
 
 MIT
