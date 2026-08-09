@@ -58,11 +58,11 @@ async function createLocalProvider(config: MemoryStoreConfig): Promise<Embedding
   // Cache downloaded models under the realmemory data directory when a
   // storagePath is configured, so we don't pollute a global cache.
   if (config.storagePath) {
-    const { dirname } = await import("node:path");
+    const { dirname, join } = await import("node:path");
     const { resolve } = await import("node:path");
     const { homedir } = await import("node:os");
     const raw = config.storagePath.startsWith("~")
-      ? resolve(homedir(), config.storagePath.slice(1))
+      ? join(homedir(), config.storagePath.slice(1))
       : resolve(config.storagePath);
     env.cacheDir = dirname(raw);
   }
