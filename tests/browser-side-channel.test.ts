@@ -6,8 +6,28 @@ import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { MemoryStore } from "../src/store";
+import type { BrowserServerOptions } from "../src/browser/server";
 import * as browserServerModule from "../src/browser/server";
 import { createMcpTools, startMcpServer } from "../src/mcp-server";
+
+// Every browser started during the tests is recorded here so afterEach can
+// close it (freeing 127.0.0.1:9333 for the next test). The vi.mock below
+// wraps the module export so startMcpServer's INTERNAL call to
+// startBrowserServer is intercepted too (a namespace vi.spyOn does NOT
+// intercept cross-module live bindings in vite-node).
+const { capturedBrowsers } = vi.hoisted(() => ({ capturedBrowsers: [] as Server[] }));
+
+vi.mock("../src/browser/server", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/browser/server")>();
+  return {
+    ...actual,
+    startBrowserServer: ((store: MemoryStore, opts: BrowserServerOptions) => {
+      const srv = actual.startBrowserServer(store, opts);
+      capturedBrowsers.push(srv);
+      return srv;
+    }) as typeof actual.startBrowserServer,
+  };
+});
 
 const SIDE_CHANNEL_PORT = 9333;
 const CHILD_EXIT_TIMEOUT_MS = 3000;
@@ -280,7 +300,6 @@ function spawnMcpBin(cwd: string): ChildProcess {
 
 describe("browser side channel (issue #12)", () => {
   let tempDir: string;
-  let capturedBrowsers: Server[];
   let baselineSigint: NodeJS.SignalsListener[];
   let baselineSigterm: NodeJS.SignalsListener[];
 
@@ -296,23 +315,10 @@ describe("browser side channel (issue #12)", () => {
     for (const l of baselineSigterm) process.on("SIGTERM", l);
   }
 
-  /** Wrap the module export so every started browser is captured for afterEach cleanup. */
-  function captureBrowserServers(): void {
-    const real = browserServerModule.startBrowserServer;
-    vi.spyOn(browserServerModule, "startBrowserServer").mockImplementation(
-      (store, opts) => {
-        const srv = real(store, opts);
-        capturedBrowsers.push(srv);
-        return srv;
-      },
-    );
-  }
-
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), "realmemory-sidechan-"));
-    capturedBrowsers = [];
+    capturedBrowsers.length = 0;
     snapshotSignalHandlers();
-    captureBrowserServers();
   });
 
   afterEach(() => {
@@ -323,7 +329,7 @@ describe("browser side channel (issue #12)", () => {
         // best-effort
       }
     }
-    capturedBrowsers = [];
+    capturedBrowsers.length = 0;
     restoreSignalHandlers();
     vi.restoreAllMocks();
     if (tempDir && existsSync(tempDir)) {
