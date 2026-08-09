@@ -1193,6 +1193,110 @@ export class MemoryStore {
     }
   }
 
+  /**
+   * Read-only aggregate statistics for the graph browser's sidebar readout:
+   * total active memories, counts per type, counts per scope, and total
+   * relationships. Does not mutate any row.
+   */
+  async getStats(): Promise<{
+    totalMemories: number;
+    byType: Record<string, number>;
+    byScope: { project: number; global: number };
+    totalRelationships: number;
+  }> {
+    const db = this.requireDb();
+    const totalMemories = (
+      db
+        .prepare("SELECT COUNT(*) AS c FROM memories WHERE status = 'active'")
+        .get() as { c: number }
+    ).c;
+    const typeRows = db
+      .prepare(
+        "SELECT type, COUNT(*) AS c FROM memories WHERE status = 'active' GROUP BY type",
+      )
+      .all() as Array<{ type: string; c: number }>;
+    const byType: Record<string, number> = {};
+    for (const r of typeRows) byType[r.type] = r.c;
+    const projectCount = (
+      db
+        .prepare(
+          "SELECT COUNT(*) AS c FROM memories WHERE status = 'active' AND project_id IS NOT NULL",
+        )
+        .get() as { c: number }
+    ).c;
+    const globalCount = (
+      db
+        .prepare(
+          "SELECT COUNT(*) AS c FROM memories WHERE status = 'active' AND project_id IS NULL",
+        )
+        .get() as { c: number }
+    ).c;
+    const totalRelationships = (
+      db.prepare("SELECT COUNT(*) AS c FROM relationships").get() as { c: number }
+    ).c;
+    return {
+      totalMemories,
+      byType,
+      byScope: { project: projectCount, global: globalCount },
+      totalRelationships,
+    };
+  }
+
+  /**
+   * Read-only full-text search returning memories ranked by bm25 relevance,
+   * WITHOUT bumping `access_count` or recomputing weight (the key difference
+   * from {@link recall}, which mutates). Used by the graph browser's text
+   * filter so browsing does not distort the decay/recency signals. Returns an
+   * empty array for a query with no usable tokens.
+   */
+  async searchText(query: string, limit?: number): Promise<Memory[]> {
+    const db = this.requireDb();
+    const ftsQuery = buildFtsQuery(query);
+    if (ftsQuery === "") return [];
+    const cap = limit ?? 100;
+    const rows = db
+      .prepare(
+        `SELECT m.* FROM memories_fts
+         JOIN memories m ON m.rowid = memories_fts.rowid
+         WHERE memories_fts MATCH ? AND m.status = 'active'
+         ORDER BY bm25(memories_fts) ASC
+         LIMIT ?`,
+      )
+      .all(ftsQuery, cap) as unknown as MemoryRow[];
+    return rows.map(rowToMemory);
+  }
+
+  /**
+   * Read-only bulk fetch of all relationships whose `source_id` OR `target_id`
+   * is in the supplied `nodeIds` set. Used by the graph browser to draw edges
+   * between the currently-visible nodes without N per-node `get()` calls. Does
+   * not mutate any row. Returns an empty array for an empty input set.
+   */
+  async getRelationshipsForNodes(nodeIds: string[]): Promise<Relationship[]> {
+    const db = this.requireDb();
+    if (nodeIds.length === 0) return [];
+    const placeholders = nodeIds.map(() => "?").join(",");
+    const rows = db
+      .prepare(
+        `SELECT id, source_id, target_id, type, created_at FROM relationships
+         WHERE source_id IN (${placeholders}) OR target_id IN (${placeholders})`,
+      )
+      .all(...nodeIds, ...nodeIds) as Array<{
+      id: string;
+      source_id: string;
+      target_id: string;
+      type: string;
+      created_at: string;
+    }>;
+    return rows.map((r) => ({
+      id: r.id,
+      sourceId: r.source_id,
+      targetId: r.target_id,
+      type: r.type as RelationshipType,
+      createdAt: r.created_at,
+    }));
+  }
+
   /** Close the database handle. Safe to call multiple times; no-op if already closed. */
   async close(): Promise<void> {
     if (this.db) {
