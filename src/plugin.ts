@@ -1,6 +1,11 @@
 import { MemoryStore } from "./store";
 import { loadConfig } from "./config";
 import { deriveProjectId } from "./project-id";
+import {
+  buildSummarizationPrompt,
+  callSummaryProvider,
+  parseSummarizationResponse,
+} from "./summarize";
 import type { MemoryStoreConfig, RecallResult, SummaryProviderConfig } from "./types";
 
 /** Shape of the OpenCode plugin context object passed to the plugin entry point. */
@@ -79,6 +84,7 @@ export function formatRecallResults(results: RecallResult[]): string {
 }
 
 /**
+/**
  * Extract the user's typed text from a `chat.message` hook's `output.parts`
  * array. Text parts carry `type: "text"` and a `text` field; synthetic and
  * ignored parts are skipped so only the user's own input drives recall.
@@ -102,6 +108,71 @@ export function extractUserText(parts: unknown[]): string {
     .map((p) => p.text)
     .join("\n")
     .trim();
+}
+
+/**
+ * Extract a plain-text representation from a message's `content` field. The
+ * OpenCode SDK message content may be a plain string or an array of typed
+ * parts (e.g. `{ type: "text", text: "..." }`); this defensively handles both
+ * and returns "" when nothing usable is found.
+ */
+function extractMessageText(content: unknown): string {
+  if (typeof content === "string") return content.trim();
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => {
+        if (typeof part === "string") return part;
+        if (part && typeof part === "object") {
+          const p = part as { text?: unknown };
+          if (typeof p.text === "string") return p.text;
+        }
+        return "";
+      })
+      .join("\n")
+      .trim();
+  }
+  return "";
+}
+
+/**
+ * Fetch a finished session's transcript through the OpenCode client, joined as
+ * `"role: content"` lines. The client is loosely typed here, so any mismatch
+ * (missing `messages` method, unexpected payload shape, or an error from the
+ * client itself) results in `null` — the caller treats that as "skip".
+ *
+ * Returns `null` when the client is unavailable or the transcript is too thin
+ * to summarize (< 3 messages or < 100 characters).
+ */
+async function fetchSessionTranscript(
+  ctx: OpenCodePluginContext,
+  sessionID: string,
+): Promise<string | null> {
+  const client = ctx.client as {
+    messages?: (args: { params: { id: string } }) => Promise<unknown[]>;
+  };
+  if (typeof client?.messages !== "function") return null;
+
+  let messages: unknown[];
+  try {
+    messages = await client.messages({ params: { id: sessionID } });
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(messages)) return null;
+
+  const lines: string[] = [];
+  for (const msg of messages) {
+    if (!msg || typeof msg !== "object") continue;
+    const m = msg as { role?: string; content?: unknown };
+    const role = typeof m.role === "string" ? m.role : "unknown";
+    const text = extractMessageText(m.content);
+    if (text) lines.push(`${role}: ${text}`);
+  }
+
+  if (lines.length < 3) return null;
+  const transcript = lines.join("\n");
+  if (transcript.length < 100) return null;
+  return transcript;
 }
 
 /**
@@ -232,21 +303,69 @@ export default async function realmemoryPlugin(
 
       if (event.type === "session.idle") {
         try {
-          const store = await getStore();
+          // Ensure config is loaded (getStore initializes state.config) before
+          // deciding whether auto-summarization applies.
+          await getStore();
           const config = state.config as {
             autoSummarize?: boolean;
             summaryProvider?: SummaryProviderConfig;
           };
           if (!config.autoSummarize || !config.summaryProvider) {
-            // Skip if summarization is disabled or no provider configured.
             await log("info", "Session idle — summarization skipped (no provider configured)");
             return;
           }
-          // Session summary generation requires an AI provider.
-          // For MVP, we skip the actual LLM summarization and just log.
-          // Reference store to keep TS happy about unused var in no-provider path.
-          void store;
-          await log("info", "Session idle — summarization not yet implemented");
+          const sessionID = (event as { properties?: { sessionID?: string } })
+            .properties?.sessionID;
+          if (!sessionID) {
+            await log("info", "Session idle — summarization skipped (no session id)");
+            return;
+          }
+
+          // ----- Detached reflective summarization (fire-and-forget) -----
+          // The LLM call can take seconds; it must never block this handler
+          // or a subsequent session.created. All work runs on a detached
+          // promise and any failure is logged, never thrown out of the hook.
+          void (async () => {
+            try {
+              const store = await getStore();
+              const provider = config.summaryProvider!;
+              const transcript = await fetchSessionTranscript(ctx, sessionID);
+              if (!transcript) {
+                await log(
+                  "info",
+                  "Session idle — summarization skipped (no substantive transcript)",
+                );
+                return;
+              }
+              const response = await callSummaryProvider(
+                provider,
+                buildSummarizationPrompt(transcript),
+              );
+              const memories = parseSummarizationResponse(response);
+              if (memories.length === 0) {
+                await log("info", "Session idle — LLM returned no parseable memories");
+                return;
+              }
+              for (const m of memories) {
+                await store.store({
+                  content: m.content,
+                  type: m.type,
+                  scope: "project",
+                  confidence: m.confidence,
+                  tags: [...m.tags, "auto-summarized"],
+                });
+              }
+              await log(
+                "info",
+                `Session idle — stored ${memories.length} auto-summarized memories`,
+              );
+            } catch (error) {
+              await log(
+                "error",
+                `Session summarize failed: ${error instanceof Error ? error.message : String(error)}`,
+              );
+            }
+          })();
         } catch (error) {
           await log(
             "error",
