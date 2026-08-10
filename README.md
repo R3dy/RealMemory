@@ -19,19 +19,9 @@ realmemory gives agents what they're missing:
 
 ## Install
 
-### From npm
+Add realmemory to your `opencode.json`:
 
 ```json
-// opencode.json
-{
-  "plugin": ["realmemory"]
-}
-```
-
-### From git
-
-```json
-// opencode.json
 {
   "plugin": ["realmemory@git+https://github.com/R3dy/RealMemory.git"]
 }
@@ -45,7 +35,7 @@ realmemory ships an OpenCode skill at `skills/realmemory/SKILL.md` that gives th
 
 ## Quick start
 
-1. **Add to `opencode.json`** — `"plugin": ["realmemory"]` (npm) or the git URL above.
+1. **Add to `opencode.json`** — `"plugin": ["realmemory@git+https://github.com/R3dy/RealMemory.git"]`.
 2. **Restart OpenCode** — the plugin loads on startup and initializes its store.
 3. **It works** — memories are captured automatically from tool runs (file reads, failed commands) and recalled automatically when a new session starts or a user message matches stored knowledge. No further configuration required.
 
@@ -55,8 +45,8 @@ To store or recall memories explicitly from any MCP client, point an MCP config 
 {
   "mcp": {
     "realmemory": {
-      "command": "npx",
-      "args": ["realmemory-mcp"]
+      "command": "node",
+      "args": ["--experimental-vm-modules", "node_modules/realmemory/dist/bin.js"]
     }
   }
 }
