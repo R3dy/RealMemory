@@ -149,6 +149,25 @@ export default async function realmemoryPlugin(
             `Auto-recall failed: ${error instanceof Error ? error.message : String(error)}`,
           );
         }
+
+        // ----- Decay scheduling (fire-and-forget) -----
+        // Kick off decay rate-limited to once per decayIntervalHours. Runs on
+        // a detached promise so it never blocks session startup; any failure is
+        // logged, never thrown out of the handler.
+        void (async () => {
+          const store = await getStore();
+          const intervalHours =
+            (state.config as { decayIntervalHours?: number }).decayIntervalHours ?? 24;
+          const ran = await store.maybeDecay("decay:lastRun", intervalHours);
+          if (ran) {
+            await log("info", "Memory decay completed");
+          }
+        })().catch((error) =>
+          log(
+            "error",
+            `Memory decay failed: ${error instanceof Error ? error.message : String(error)}`,
+          ),
+        );
       }
 
       if (event.type === "session.idle") {
