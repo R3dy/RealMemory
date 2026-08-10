@@ -200,6 +200,13 @@ export interface MemoryStoreConfig {
   embeddingApiUrl?: string;
   embeddingApiKey?: string;
   decayHalfLifeDays?: number;
+  /**
+   * How often (in hours) automatic decay scheduling runs. A session.created
+   * event triggers decay at most once per this interval; the last-run
+   * timestamp is stored durably in SQLite so the cadence survives restarts.
+   * Defaults to 24.
+   */
+  decayIntervalHours?: number;
   recallThreshold?: number;
   maxRecallResults?: number;
   autoCapture?: boolean;

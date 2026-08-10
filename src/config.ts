@@ -9,6 +9,7 @@ const DEFAULTS: Required<
     | "storagePath"
     | "embeddingModel"
     | "decayHalfLifeDays"
+    | "decayIntervalHours"
     | "recallThreshold"
     | "maxRecallResults"
     | "autoCapture"
@@ -21,6 +22,7 @@ const DEFAULTS: Required<
   storagePath: "~/.opencode/realmemory/data.db",
   embeddingModel: "Xenova/all-MiniLM-L6-v2",
   decayHalfLifeDays: 30,
+  decayIntervalHours: 24,
   recallThreshold: 0.3,
   maxRecallResults: 5,
   autoCapture: true,
@@ -77,6 +79,12 @@ export function loadConfig(projectDir?: string): MemoryStoreConfig {
 export function validateConfig(config: MemoryStoreConfig): void {
   if (config.decayHalfLifeDays !== undefined && config.decayHalfLifeDays <= 0) {
     throw new Error("decayHalfLifeDays must be > 0");
+  }
+  if (
+    config.decayIntervalHours !== undefined &&
+    (config.decayIntervalHours <= 0 || Number.isNaN(config.decayIntervalHours))
+  ) {
+    throw new Error("decayIntervalHours must be > 0");
   }
   if (
     config.recallThreshold !== undefined &&
