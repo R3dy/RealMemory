@@ -24,6 +24,8 @@ interface PluginState {
   store: MemoryStore | null;
   config: MemoryStoreConfig | null;
   injectedMemoryIds: Set<string>;
+  /** Formatted recall block staged for the next chat system prompt. */
+  pendingInjection: string | null;
   initialized: boolean;
   /** Shared in-flight init promise so concurrent detached hooks init once. */
   initPromise: Promise<MemoryStore> | null;
@@ -77,15 +79,46 @@ export function formatRecallResults(results: RecallResult[]): string {
 }
 
 /**
+ * Extract the user's typed text from a `chat.message` hook's `output.parts`
+ * array. Text parts carry `type: "text"` and a `text` field; synthetic and
+ * ignored parts are skipped so only the user's own input drives recall.
+ */
+export function extractUserText(parts: unknown[]): string {
+  if (!Array.isArray(parts)) return "";
+  return (parts as Array<{
+    type?: string;
+    text?: string;
+    synthetic?: boolean;
+    ignored?: boolean;
+  }>)
+    .filter(
+      (p) =>
+        p?.type === "text" &&
+        typeof p?.text === "string" &&
+        p.text.length > 0 &&
+        p.synthetic !== true &&
+        p.ignored !== true,
+    )
+    .map((p) => p.text)
+    .join("\n")
+    .trim();
+}
+
+/**
  * OpenCode plugin entry point. Initializes a MemoryStore on first use (with
  * config loaded relative to `ctx.directory` and a project ID derived from it),
  * then returns the hook handlers:
- *   - `event` — auto-recall on `session.created`, auto-summarize on `session.idle`
+ *   - `event` — auto-recall on `session.created` (staged for injection),
+ *     auto-summarize on `session.idle`
  *   - `tool.execute.after` — auto-capture learnings (file reads on config/schema
  *     files become `codebase_fact`s; bash errors become `lesson_learned`s);
  *     fire-and-forget so a slow write never blocks the tool loop
- *   - `message.updated` — auto-recall on user messages, deduplicated against
- *     memories already injected this session; fire-and-forget
+ *   - `chat.message` — auto-recall on user messages, formatted results staged
+ *     for injection and deduplicated against memories already delivered this
+ *     session; fire-and-forget
+ *   - `experimental.chat.system.transform` — the delivery mechanism: appends
+ *     the staged recall block to the agent's system prompt and clears it, so
+ *     the LLM actually sees the recalled memories
  *
  * @returns the hook handler map OpenCode installs the plugin's handlers from.
  */
@@ -101,6 +134,7 @@ export default async function realmemoryPlugin(
       projectId: deriveProjectId(ctx.directory),
     },
     injectedMemoryIds: new Set(),
+    pendingInjection: null,
     initialized: false,
     initPromise: null,
   };
@@ -162,9 +196,11 @@ export default async function realmemoryPlugin(
               (state.config as { recallThreshold?: number }).recallThreshold || 0.3,
             traverse: true,
           });
-          // Mark these as injected so we don't re-inject them later.
+          // Mark these as delivered so we don't re-inject them later, and
+          // stage the formatted block for the next system prompt.
           results.forEach((r) => state.injectedMemoryIds.add(r.memory.id));
           if (results.length > 0) {
+            state.pendingInjection = formatRecallResults(results);
             await log("info", `Auto-recalled ${results.length} memories for new session`);
           }
         } catch (error) {
@@ -287,17 +323,20 @@ export default async function realmemoryPlugin(
       })();
     },
 
-    // On user message: auto-recall if the message matches stored memories.
+    // On user message: recall memories matching the message text, format them,
+    // and stage them for injection on the next `experimental.chat.system.transform`.
     // Non-blocking: recall runs on a detached promise; the handler resolves
     // immediately so a slow recall never delays message processing. Errors are
-    // logged, never thrown out of the handler.
-    "message.updated": (
-      input: { message?: { role?: string; content?: string } },
-      _output: unknown,
+    // logged, never thrown out of the handler. Dedup is keyed on
+    // `injectedMemoryIds`, so a memory delivered earlier (session start or a
+    // previous message) is not staged a second time.
+    "chat.message": (
+      _input: { sessionID?: string },
+      output: { message?: { role?: string }; parts?: unknown[] },
     ) => {
-      const content = input?.message?.content;
-      const role = input?.message?.role;
-      if (role !== "human" || !content) return;
+      if (output?.message?.role !== "user") return;
+      const content = extractUserText(output?.parts ?? []);
+      if (!content) return;
 
       void (async () => {
         try {
@@ -314,19 +353,15 @@ export default async function realmemoryPlugin(
             traverse: true,
           });
 
-          // Deduplicate: skip memories already injected this session.
+          // Deduplicate: skip memories already delivered this session.
           const newResults = results.filter(
             (r) => !state.injectedMemoryIds.has(r.memory.id),
           );
           if (newResults.length === 0) return;
 
           newResults.forEach((r) => state.injectedMemoryIds.add(r.memory.id));
-          const formatted = formatRecallResults(newResults);
+          state.pendingInjection = formatRecallResults(newResults);
           await log("info", `Auto-recalled ${newResults.length} memories for user message`);
-          // The formatted text would be injected into the agent's context.
-          // For MVP, we log it — the actual injection mechanism depends on the
-          // OpenCode API (e.g. tui.prompt.append or a system message hook).
-          void formatted;
         } catch (error) {
           await log(
             "error",
@@ -334,6 +369,25 @@ export default async function realmemoryPlugin(
           );
         }
       })();
+    },
+
+    // Delivery mechanism: OpenCode builds the LLM request (system prompt)
+    // after a user message is received, so any recall block staged by
+    // `session.created` or `chat.message` is appended to the system prompt
+    // here — and cleared so it is never injected twice.
+    "experimental.chat.system.transform": (
+      _input: unknown,
+      output: { system?: string[] },
+    ) => {
+      if (!state.pendingInjection) return;
+      if (!Array.isArray(output?.system)) {
+        // Defensive: OpenCode always sends `system: string[]`; if it does not,
+        // drop the staged block rather than crashing the chat request.
+        state.pendingInjection = null;
+        return;
+      }
+      output.system.push(state.pendingInjection);
+      state.pendingInjection = null;
     },
   };
 }
