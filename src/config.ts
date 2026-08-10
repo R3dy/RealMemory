@@ -11,6 +11,7 @@ const DEFAULTS: Required<
     | "decayHalfLifeDays"
     | "decayIntervalHours"
     | "recallThreshold"
+    | "duplicateSimilarityThreshold"
     | "maxRecallResults"
     | "autoCapture"
     | "autoSummarize"
@@ -24,6 +25,7 @@ const DEFAULTS: Required<
   decayHalfLifeDays: 30,
   decayIntervalHours: 24,
   recallThreshold: 0.3,
+  duplicateSimilarityThreshold: 0.92,
   maxRecallResults: 5,
   autoCapture: true,
   autoSummarize: false,
@@ -91,6 +93,12 @@ export function validateConfig(config: MemoryStoreConfig): void {
     (config.recallThreshold < 0 || config.recallThreshold > 1)
   ) {
     throw new Error("recallThreshold must be in [0, 1]");
+  }
+  if (
+    config.duplicateSimilarityThreshold !== undefined &&
+    (config.duplicateSimilarityThreshold < 0 || config.duplicateSimilarityThreshold > 1)
+  ) {
+    throw new Error("duplicateSimilarityThreshold must be in [0, 1]");
   }
   if (
     config.archiveThreshold !== undefined &&

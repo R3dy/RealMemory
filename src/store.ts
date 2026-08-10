@@ -51,6 +51,47 @@ const VALID_TYPES: ReadonlySet<MemoryType> = new Set<MemoryType>([
 const DEFAULT_LIMIT = 50;
 
 /**
+ * Keyword-mode dedup gate: an FTS5 candidate must hold at least this fraction
+ * of the best (maximum) bm25 score in the result set to be considered a
+ * near-duplicate (best match → 1.0). Combined with `DUPLICATE_TOKEN_OVERLAP`
+ * below, this only fires for exact/near-exact text, never for partial keyword
+ * hits. Keyword dedup is a fallback for stores without an embedding provider
+ * and guards against accidental re-stores of the same content — it does not
+ * catch semantic paraphrases.
+ */
+const DUPLICATE_KEYWORD_RELEVANCE = 0.9;
+/**
+ * Keyword-mode dedup gate: a candidate is treated as a near-duplicate only
+ * when its token set overlaps the incoming content by at least this fraction
+ * (overlap coefficient = shared tokens / larger token count; 1.0 = identical
+ * token set). A low overlap means the FTS hit is a partial keyword match, so
+ * we store a new memory instead of reinforcing an unrelated one.
+ */
+const DUPLICATE_TOKEN_OVERLAP = 0.95;
+
+/** Tokenize text into lowercase alphanumeric tokens (casing/punctuation ignored). */
+function tokenize(text: string): string[] {
+  return (text.toLowerCase().match(/[a-z0-9]+/g) ?? []).filter((t) => t.length > 0);
+}
+
+/**
+ * Overlap coefficient between two texts: shared token count / larger token
+ * count. Returns 0 when either text has no tokens; 1.0 when both token sets
+ * are identical.
+ */
+function tokenOverlap(a: string, b: string): number {
+  const ta = tokenize(a);
+  const tb = tokenize(b);
+  if (ta.length === 0 || tb.length === 0) return 0;
+  const setB = new Set(tb);
+  let shared = 0;
+  for (const t of ta) {
+    if (setB.has(t)) shared++;
+  }
+  return shared / Math.max(ta.length, tb.length);
+}
+
+/**
  * Build a safe FTS5 MATCH query string from free text. Splits on whitespace,
  * strips FTS5 special characters (double quotes, asterisks), and joins tokens
  * with OR for broad recall. Returns "" when no usable tokens remain.
@@ -210,10 +251,17 @@ export class MemoryStore {
   }
 
   /**
-   * Store a new memory. Validates type and confidence, scrubs secrets from
-   * content, computes the initial composite weight, inserts the row, computes
-   * and persists its embedding (best-effort, never blocks on failure), and
-   * creates any supplied relationships. Returns the canonical Memory record.
+   * Store a new memory. Validates type and confidence and scrubs secrets from
+   * content, then checks for a near-duplicate active memory in the same scope
+   * and type (cosine-similarity in embedding mode, exact/near-exact text in
+   * keyword mode). If a near-duplicate active memory exists, reinforces it —
+   * bumping `reinforcementCount` and boosting confidence with diminishing
+   * returns — and returns the reinforced memory instead of inserting a new
+   * row. This is a contract change: `store()` no longer guarantees a fresh
+   * row per call. Otherwise it computes the initial composite weight, inserts
+   * the row, computes and persists its embedding (best-effort, never blocks
+   * on failure), and creates any supplied relationships. Returns the
+   * canonical Memory record.
    */
   async store(input: StoreInput): Promise<Memory> {
     const db = this.requireDb();
@@ -229,16 +277,26 @@ export class MemoryStore {
       throw new InvalidConfidenceError(confidence);
     }
 
-    // 3. Identity + timestamps.
+    // 3. Scope + scrubbed content, shared by the dedup check and the insert.
+    const scope: MemoryScope = input.scope ?? "project";
+    const content = scrubSecrets(input.content);
+
+    // 4. Near-duplicate check: when an active memory in the same scope and
+    //    type already holds identical/near-identical content, reinforce the
+    //    existing memory instead of inserting a second row. Relationships
+    //    passed in the input are intentionally not created on this path — no
+    //    new row exists to attach them to.
+    const duplicate = await this.findDuplicate(content, input.type, scope);
+    if (duplicate) {
+      return this.update(duplicate.id, { reinforce: true });
+    }
+
+    // 5. Identity + timestamps.
     const id = generateUlid();
     const now = new Date().toISOString();
 
-    // 5. Scope + project_id.
-    const scope: MemoryScope = input.scope ?? "project";
+    // 6. project_id (scope resolved above).
     const projectId = scope === "global" ? null : this.config.projectId ?? null;
-
-    // 6. Scrub secrets from content.
-    const content = scrubSecrets(input.content);
 
     // 7. Serialize tags + metadata.
     const tagsJson = JSON.stringify(input.tags ?? []);
@@ -316,6 +374,97 @@ export class MemoryStore {
       throw new MemoryStoreError(`Failed to read back stored memory: ${id}`);
     }
     return rowToMemory(stored);
+  }
+
+  /**
+   * Find an existing active memory in the same scope and type that holds a
+   * near-duplicate of the given content. Returns the matching row, or null
+   * when no duplicate exists. Used by {@link store} to reinforce an existing
+   * memory instead of inserting a second row.
+   *
+   * Two modes mirror the recall engine:
+   * - Embedding mode (an embedding provider is configured): embed the content
+   *   and score every same-scope/same-type active memory by cosine
+   *   similarity. A score at or above `duplicateSimilarityThreshold` (default
+   *   0.92) marks a duplicate. Memories without a stored embedding are
+   *   skipped. If the embedding computation itself fails, we fall back to the
+   *   keyword gate below — the same best-effort posture the insert path uses.
+   * - Keyword mode (no embedding provider): reuse the FTS5 index for
+   *   candidates, then require both a high normalized bm25 relevance
+   *   (`DUPLICATE_KEYWORD_RELEVANCE`) and a near-exact token-set overlap
+   *   (`DUPLICATE_TOKEN_OVERLAP`). This catches exact/near-exact text but not
+   *   semantic paraphrases — it guards against accidental re-stores of the
+   *   same content when vectors are unavailable.
+   */
+  private async findDuplicate(
+    content: string,
+    type: MemoryType,
+    scope: MemoryScope,
+  ): Promise<MemoryRow | null> {
+    const db = this.requireDb();
+    // Same scope + same type as the incoming memory. The plain filter serves
+    // the direct SELECT; the "m."-prefixed one disambiguates the FTS join.
+    // `query` is unused by buildRecallFilter — only scope/types/tags are read.
+    const recallFilter: RecallQuery = { query: content, scope, types: [type] };
+    const plainFilter = this.buildRecallFilter(recallFilter);
+    const joinFilter = this.buildRecallFilter(recallFilter, "m.");
+
+    // Embedding mode: cosine similarity against every same-scope/type active
+    // memory.
+    if (this.embeddingProvider) {
+      try {
+        const vec = await this.embeddingProvider.embed(content);
+        const rows = db
+          .prepare(`SELECT * FROM memories WHERE ${plainFilter.whereSql}`)
+          .all(...plainFilter.params) as unknown as MemoryRow[];
+        const threshold = this.config.duplicateSimilarityThreshold ?? 0.92;
+        let best: MemoryRow | null = null;
+        let bestSim = -1;
+        for (const row of rows) {
+          const embedding = embeddingFromBuffer(row.embedding as unknown as Uint8Array);
+          if (!embedding) continue;
+          const sim = cosineSimilarity(vec, embedding);
+          if (sim > bestSim) {
+            bestSim = sim;
+            best = row;
+          }
+        }
+        if (best && bestSim >= threshold) return best;
+        return null;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn(`[realmemory] Duplicate check (embedding) failed: ${msg}`);
+        // Best-effort: continue to the keyword gate below.
+      }
+    }
+
+    // Keyword mode: FTS5 candidates + near-exact text overlap.
+    const ftsQuery = buildFtsQuery(content);
+    if (ftsQuery === "") return null;
+    const candidates = db
+      .prepare(
+        `SELECT m.*, bm25(memories_fts) AS fts_score
+         FROM memories_fts
+         JOIN memories m ON m.rowid = memories_fts.rowid
+         WHERE memories_fts MATCH ? AND ${joinFilter.whereSql}
+         ORDER BY bm25(memories_fts) ASC
+         LIMIT 20`,
+      )
+      .all(ftsQuery, ...joinFilter.params) as unknown as Array<MemoryRow & { fts_score: number }>;
+    if (candidates.length === 0) return null;
+
+    // Normalize bm25 the same way recall does (best match → 1.0), then require
+    // both a high relative score and a near-identical token set so a partial
+    // keyword hit never collapses an unrelated memory into a reinforcement.
+    const rawScores = candidates.map((r) => -r.fts_score);
+    const maxRaw = Math.max(...rawScores, 1e-9);
+    for (let i = 0; i < candidates.length; i++) {
+      const relevance = rawScores[i] / maxRaw;
+      if (relevance < DUPLICATE_KEYWORD_RELEVANCE) continue;
+      if (tokenOverlap(content, candidates[i].content) < DUPLICATE_TOKEN_OVERLAP) continue;
+      return candidates[i];
+    }
+    return null;
   }
 
   /**

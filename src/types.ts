@@ -208,6 +208,14 @@ export interface MemoryStoreConfig {
    */
   decayIntervalHours?: number;
   recallThreshold?: number;
+  /**
+   * Cosine-similarity threshold used by `store()` to detect a near-duplicate
+   * active memory in the same scope and type (embedding mode only). When the
+   * incoming content scores at or above this against an existing memory, the
+   * existing memory is reinforced instead of inserting a new row. Defaults to
+   * 0.92. Lower = more aggressive dedup; higher = fewer merges.
+   */
+  duplicateSimilarityThreshold?: number;
   maxRecallResults?: number;
   autoCapture?: boolean;
   autoSummarize?: boolean;
