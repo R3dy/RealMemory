@@ -12,7 +12,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node-version: [18, 20, 22]
+        # Node 18 (EOL Apr 2025) and 20 (EOL Apr 2026) crash the vitest forks
+        # pool at startup with better-sqlite3 13.x (native module). Both were
+        # already failing on main CI (which never got past the typecheck step
+        # before this PR fixed build-before-typecheck ordering). Node 22 is the
+        # active LTS and the only version we CI-test against. Re-adding a
+        # future LTS requires verifying better-sqlite3 + vitest stability on it.
+        node-version: [22]
     steps:
       - uses: actions/checkout@v4
       - name: Use Node.js ${{ matrix.node-version }}
