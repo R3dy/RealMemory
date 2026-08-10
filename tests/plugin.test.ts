@@ -6,6 +6,7 @@ import realmemoryPlugin, {
   isConfigOrSchemaFile,
   isErrorResult,
   formatRecallResults,
+  extractUserText,
   type OpenCodePluginContext,
 } from "../src/plugin";
 import { MemoryStore } from "../src/store";
@@ -87,6 +88,40 @@ function makeMemory(overrides: Partial<Memory> = {}): Memory {
     metadata: overrides.metadata ?? {},
     status: overrides.status ?? "active",
   };
+}
+
+/**
+ * Wait until the plugin's own DB (read through a single fresh connection that
+ * stays open for the whole wait) shows `count` memories of the given type.
+ * Auto-capture hooks are fire-and-forget: the hook resolves before the detached
+ * write lands, so assertions that depend on the capture reaching the DB must
+ * poll. The connection is opened once — repeated DDL during concurrent writes
+ * would contend for the SQLite write lock.
+ */
+async function waitForCaptured(
+  dbPath: string,
+  projectId: string,
+  type: "codebase_fact" | "lesson_learned",
+  count: number,
+  timeoutMs = 3000,
+): Promise<void> {
+  const verifyStore = new MemoryStore({
+    storagePath: dbPath,
+    projectId,
+    embeddingModel: null,
+  });
+  await verifyStore.init();
+  try {
+    await vi.waitFor(
+      async () => {
+        const list = await verifyStore.list({ scope: "all", limit: 50 });
+        expect(list.memories.filter((m) => m.type === type).length).toBe(count);
+      },
+      { timeout: timeoutMs, interval: 20 },
+    );
+  } finally {
+    await verifyStore.close();
+  }
 }
 
 beforeEach(() => {
@@ -266,7 +301,8 @@ describe("plugin shape", () => {
     expect(hooks).not.toBeNull();
     expect(typeof hooks.event).toBe("function");
     expect(typeof hooks["tool.execute.after"]).toBe("function");
-    expect(typeof hooks["message.updated"]).toBe("function");
+    expect(typeof hooks["chat.message"]).toBe("function");
+    expect(typeof hooks["experimental.chat.system.transform"]).toBe("function");
   });
 });
 
@@ -365,6 +401,9 @@ describe("tool.execute.after hook", () => {
       { args: { filePath: "/repo/package.json" }, output: "file contents" },
     );
 
+    // The hook resolves before the detached write lands — poll for the capture.
+    await waitForCaptured(dbPath, deriveProjectId(ctx.directory), "codebase_fact", 1);
+
     // Verify the memory was stored in the DB.
     const verifyStore = new MemoryStore({
       storagePath: dbPath,
@@ -397,6 +436,8 @@ describe("tool.execute.after hook", () => {
       { args: { filePath: "/src/foo.ts" }, output: "source code" },
     );
 
+    await waitForCaptured(dbPath, deriveProjectId(ctx.directory), "codebase_fact", 0);
+
     const verifyStore = new MemoryStore({
       storagePath: dbPath,
       projectId: deriveProjectId(ctx.directory),
@@ -426,6 +467,8 @@ describe("tool.execute.after hook", () => {
         output: "error: module not found",
       },
     );
+
+    await waitForCaptured(dbPath, deriveProjectId(ctx.directory), "lesson_learned", 1);
 
     const verifyStore = new MemoryStore({
       storagePath: dbPath,
@@ -458,6 +501,8 @@ describe("tool.execute.after hook", () => {
       { args: { command: "echo hello" }, output: "hello\n" },
     );
 
+    await waitForCaptured(dbPath, deriveProjectId(ctx.directory), "lesson_learned", 0);
+
     const verifyStore = new MemoryStore({
       storagePath: dbPath,
       projectId: deriveProjectId(ctx.directory),
@@ -485,6 +530,8 @@ describe("tool.execute.after hook", () => {
       { args: { filePath: "/repo/package.json" }, output: "contents" },
     );
 
+    await waitForCaptured(dbPath, deriveProjectId(ctx.directory), "codebase_fact", 0);
+
     const verifyStore = new MemoryStore({
       storagePath: dbPath,
       projectId: deriveProjectId(ctx.directory),
@@ -498,10 +545,10 @@ describe("tool.execute.after hook", () => {
   });
 });
 
-/* ------------------------ message.updated auto-recall ----------------------- */
+/* ------------------------ chat.message auto-recall ----------------------- */
 
-describe("message.updated hook", () => {
-  it("triggers recall for human messages with matching content", async () => {
+describe("chat.message hook", () => {
+  it("triggers recall for user messages with matching content", async () => {
     const logSpy = vi.fn().mockResolvedValue(undefined);
     const { ctx, dbPath } = makeContext({ logSpy });
 
@@ -522,20 +569,26 @@ describe("message.updated hook", () => {
 
     const hooks = await realmemoryPlugin(ctx);
     await (
-      hooks["message.updated"] as (
-        input: { message?: { role?: string; content?: string } },
-        output: unknown,
+      hooks["chat.message"] as (
+        input: { sessionID?: string },
+        output: { message?: { role?: string; id?: string }; parts?: unknown[] },
       ) => Promise<void>
     )(
-      { message: { role: "human", content: "REST conventions for all endpoints" } },
-      {},
+      { sessionID: "s1" },
+      {
+        message: { role: "user", id: "m1" },
+        parts: [{ type: "text", text: "REST conventions for all endpoints" }],
+      },
     );
 
-    const recallCalls = logSpy.mock.calls.filter((c) => {
-      const body = (c[0] as { body?: { message?: string } })?.body;
-      return body?.message?.includes("Auto-recalled");
-    });
-    expect(recallCalls.length).toBeGreaterThan(0);
+    // Recall runs on a detached promise — wait for the background log call.
+    await vi.waitFor(() => {
+      const recallCalls = logSpy.mock.calls.filter((c) => {
+        const body = (c[0] as { body?: { message?: string } })?.body;
+        return body?.message?.includes("Auto-recalled");
+      });
+      expect(recallCalls.length).toBeGreaterThan(0);
+    }, { timeout: 3000 });
   });
 
   it("does NOT trigger recall for assistant messages", async () => {
@@ -544,13 +597,16 @@ describe("message.updated hook", () => {
 
     const hooks = await realmemoryPlugin(ctx);
     await (
-      hooks["message.updated"] as (
-        input: { message?: { role?: string; content?: string } },
-        output: unknown,
+      hooks["chat.message"] as (
+        input: { sessionID?: string },
+        output: { message?: { role?: string; id?: string }; parts?: unknown[] },
       ) => Promise<void>
     )(
-      { message: { role: "assistant", content: "I will help you with that" } },
-      {},
+      { sessionID: "s1" },
+      {
+        message: { role: "assistant", id: "a1" },
+        parts: [{ type: "text", text: "I will help you with that" }],
+      },
     );
 
     const recallCalls = logSpy.mock.calls.filter((c) => {
@@ -560,17 +616,20 @@ describe("message.updated hook", () => {
     expect(recallCalls.length).toBe(0);
   });
 
-  it("does NOT trigger recall when content is empty", async () => {
+  it("does NOT trigger recall when the message text is empty", async () => {
     const logSpy = vi.fn().mockResolvedValue(undefined);
     const { ctx } = makeContext({ logSpy });
 
     const hooks = await realmemoryPlugin(ctx);
     await (
-      hooks["message.updated"] as (
-        input: { message?: { role?: string; content?: string } },
-        output: unknown,
+      hooks["chat.message"] as (
+        input: { sessionID?: string },
+        output: { message?: { role?: string; id?: string }; parts?: unknown[] },
       ) => Promise<void>
-    )({ message: { role: "human", content: "" } }, {});
+    )(
+      { sessionID: "s1" },
+      { message: { role: "user", id: "m1" }, parts: [] },
+    );
 
     const recallCalls = logSpy.mock.calls.filter((c) => {
       const body = (c[0] as { body?: { message?: string } })?.body;
@@ -583,7 +642,7 @@ describe("message.updated hook", () => {
 /* --------------------------- deduplication --------------------------- */
 
 describe("deduplication", () => {
-  it("session.created injects a memory, then message.updated skips it", async () => {
+  it("session.created injects a memory, then chat.message skips it", async () => {
     const logSpy = vi.fn().mockResolvedValue(undefined);
     const { ctx, dbPath } = makeContext({ logSpy });
 
@@ -616,22 +675,27 @@ describe("deduplication", () => {
     });
     expect(firstRecallCalls.length).toBe(1);
 
-    // 2. message.updated with content that would match the same memory.
-    //    Dedup should skip it (no new recall log).
+    // 2. chat.message with content that would match the same memory. Dedup
+    //    should skip it (no new stage, no new recall log). The hook is
+    //    fire-and-forget, so wait long enough for the detached recall to run.
     await (
-      hooks["message.updated"] as (
-        input: { message?: { role?: string; content?: string } },
-        output: unknown,
+      hooks["chat.message"] as (
+        input: { sessionID?: string },
+        output: { message?: { role?: string; id?: string }; parts?: unknown[] },
       ) => Promise<void>
     )(
+      { sessionID: "s1" },
       {
-        message: {
-          role: "human",
-          content: `Project at ${dirKeyword} SQLite REST conventions`,
-        },
+        message: { role: "user", id: "m1" },
+        parts: [
+          {
+            type: "text",
+            text: `Project at ${dirKeyword} SQLite REST conventions`,
+          },
+        ],
       },
-      {},
     );
+    await new Promise((r) => setTimeout(r, 200));
 
     // Still only 1 recall log — the second call was deduped.
     const allRecallCalls = logSpy.mock.calls.filter((c) => {
@@ -639,6 +703,27 @@ describe("deduplication", () => {
       return body?.message?.includes("Auto-recalled");
     });
     expect(allRecallCalls.length).toBe(1);
+
+    // Delivering via system.transform after the deduped call injects nothing
+    // new on top of the session-start block.
+    const system: string[] = ["You are an agent."];
+    await (
+      hooks["experimental.chat.system.transform"] as (
+        input: unknown,
+        output: { system: string[] },
+      ) => Promise<void>
+    )({}, { system });
+    expect(system.length).toBe(2);
+    expect(system[1]).toContain("## Relevant memories from previous sessions");
+
+    const system2: string[] = ["You are an agent."];
+    await (
+      hooks["experimental.chat.system.transform"] as (
+        input: unknown,
+        output: { system: string[] },
+      ) => Promise<void>
+    )({}, { system: system2 });
+    expect(system2.length).toBe(1);
   });
 });
 
@@ -671,7 +756,8 @@ describe("lazy initialization", () => {
 
     const hooks = await realmemoryPlugin(ctx);
 
-    // First call inits the store.
+    // Both hook calls resolve immediately (fire-and-forget); the detached
+    // writes land after. Poll until both captures are present.
     await (
       hooks["tool.execute.after"] as (
         input: { tool: string },
@@ -681,8 +767,6 @@ describe("lazy initialization", () => {
       { tool: "read" },
       { args: { filePath: "/repo/package.json" }, output: "contents" },
     );
-
-    // Second call should reuse the same store (no re-init, no error).
     await (
       hooks["tool.execute.after"] as (
         input: { tool: string },
@@ -693,7 +777,9 @@ describe("lazy initialization", () => {
       { args: { filePath: "/repo/tsconfig.json" }, output: "contents" },
     );
 
-    // Both captures should be in the same DB.
+    // Both captures should land in the same DB.
+    await waitForCaptured(dbPath, deriveProjectId(ctx.directory), "codebase_fact", 2);
+
     const verifyStore = new MemoryStore({
       storagePath: dbPath,
       projectId: deriveProjectId(ctx.directory),
@@ -705,6 +791,265 @@ describe("lazy initialization", () => {
 
     const facts = list.memories.filter((m) => m.type === "codebase_fact");
     expect(facts.length).toBe(2);
+  });
+});
+
+/* ------------------- extractUserText ------------------- */
+
+describe("extractUserText", () => {
+  it("joins text parts into a single string", () => {
+    expect(
+      extractUserText([
+        { type: "text", text: "Remember" },
+        { type: "text", text: "the deployment steps" },
+      ]),
+    ).toBe("Remember\nthe deployment steps");
+  });
+
+  it("ignores non-text parts, synthetic parts, and empty text", () => {
+    expect(
+      extractUserText([
+        { type: "tool", text: "ignored" },
+        { type: "text", text: "" },
+        { type: "text", text: "real text", synthetic: true },
+        { type: "text", text: "agent filler", ignored: true },
+        { type: "text", text: "keep me" },
+      ]),
+    ).toBe("keep me");
+  });
+
+  it("returns empty string for no / non-array parts", () => {
+    expect(extractUserText([])).toBe("");
+    expect(extractUserText(undefined as unknown as unknown[])).toBe("");
+    expect(extractUserText("nope" as unknown as unknown[])).toBe("");
+  });
+});
+
+/* ------------------ system prompt injection (issue #4) ------------------ */
+
+describe("system prompt injection", () => {
+  it("delivers session.created recall results into output.system and clears them", async () => {
+    const logSpy = vi.fn().mockResolvedValue(undefined);
+    const { ctx, dbPath } = makeContext({ logSpy });
+
+    // Seed a memory that keyword-matches the session query.
+    const seedStore = new MemoryStore({
+      storagePath: dbPath,
+      projectId: deriveProjectId(ctx.directory),
+      embeddingModel: null,
+      recallThreshold: 0.0,
+    });
+    await seedStore.init();
+    await seedStore.store({
+      content: `Project at ${ctx.directory} uses SQLite`,
+      type: "codebase_fact",
+      tags: ["seed"],
+    });
+    await seedStore.close();
+
+    const hooks = await realmemoryPlugin(ctx);
+    await (hooks.event as (arg: { event: { type: string } }) => Promise<void>)({
+      event: { type: "session.created" },
+    });
+
+    // The recalled memory must appear in the built system prompt.
+    const system: string[] = ["You are an agent."];
+    await (
+      hooks["experimental.chat.system.transform"] as (
+        input: unknown,
+        output: { system: string[] },
+      ) => Promise<void>
+    )({}, { system });
+    expect(system.length).toBe(2);
+    expect(system[1]).toContain("## Relevant memories from previous sessions");
+    expect(system[1]).toContain("uses SQLite");
+
+    // The staged block is cleared after delivery — nothing is injected again.
+    const system2: string[] = ["You are an agent."];
+    await (
+      hooks["experimental.chat.system.transform"] as (
+        input: unknown,
+        output: { system: string[] },
+      ) => Promise<void>
+    )({}, { system: system2 });
+    expect(system2.length).toBe(1);
+  });
+
+  it("delivers chat.message recall results into output.system", async () => {
+    const logSpy = vi.fn().mockResolvedValue(undefined);
+    const { ctx, dbPath } = makeContext({ logSpy });
+
+    const seedStore = new MemoryStore({
+      storagePath: dbPath,
+      projectId: deriveProjectId(ctx.directory),
+      embeddingModel: null,
+      recallThreshold: 0.0,
+    });
+    await seedStore.init();
+    await seedStore.store({
+      content: "The API uses REST conventions for all endpoints",
+      type: "codebase_fact",
+      tags: ["seed"],
+    });
+    await seedStore.close();
+
+    const hooks = await realmemoryPlugin(ctx);
+    await (
+      hooks["chat.message"] as (
+        input: { sessionID?: string },
+        output: { message?: { role?: string; id?: string }; parts?: unknown[] },
+      ) => Promise<void>
+    )(
+      { sessionID: "s1" },
+      {
+        message: { role: "user", id: "m1" },
+        parts: [{ type: "text", text: "REST conventions for all endpoints" }],
+      },
+    );
+
+    // Recall is detached — the stage is set right before the log call lands.
+    await vi.waitFor(() => {
+      const recallCalls = logSpy.mock.calls.filter((c) => {
+        const body = (c[0] as { body?: { message?: string } })?.body;
+        return body?.message?.includes("Auto-recalled");
+      });
+      expect(recallCalls.length).toBeGreaterThan(0);
+    }, { timeout: 3000 });
+
+    const system: string[] = ["You are an agent."];
+    await (
+      hooks["experimental.chat.system.transform"] as (
+        input: unknown,
+        output: { system: string[] },
+      ) => Promise<void>
+    )({}, { system });
+    expect(system.length).toBe(2);
+    expect(system[1]).toContain("REST conventions");
+  });
+});
+
+/* ------------------- non-blocking hooks (issue #9) ------------------- */
+
+describe("non-blocking hooks", () => {
+  it("tool.execute.after resolves well before the store write finishes", async () => {
+    const logSpy = vi.fn().mockResolvedValue(undefined);
+    const { ctx } = makeContext({ logSpy });
+
+    const hooks = await realmemoryPlugin(ctx);
+
+    // Make the underlying store write take 250ms while the hook itself must
+    // resolve in a tiny fraction of that (fire-and-forget).
+    const slowWrite = vi
+      .spyOn(MemoryStore.prototype, "store")
+      .mockImplementation(async function slowStore(): Promise<Memory> {
+        await new Promise((r) => setTimeout(r, 250));
+        return makeMemory({ id: "slow-memory" });
+      });
+
+    try {
+      const start = Date.now();
+      await (
+        hooks["tool.execute.after"] as (
+          input: { tool: string },
+          output: { args?: Record<string, unknown>; output?: unknown },
+        ) => Promise<void>
+      )(
+        { tool: "read" },
+        { args: { filePath: "/repo/package.json" }, output: "contents" },
+      );
+      const elapsed = Date.now() - start;
+      expect(elapsed).toBeLessThan(150);
+    } finally {
+      slowWrite.mockRestore();
+    }
+  });
+
+  it("the message recall hook resolves well before the recall finishes", async () => {
+    const logSpy = vi.fn().mockResolvedValue(undefined);
+    const { ctx } = makeContext({ logSpy });
+
+    const hooks = await realmemoryPlugin(ctx);
+
+    // Make the underlying recall take 250ms while the hook itself must resolve
+    // in a tiny fraction of that.
+    const slowRecall = vi
+      .spyOn(MemoryStore.prototype, "recall")
+      .mockImplementation(async function slowRecall(): Promise<RecallResult[]> {
+        await new Promise((r) => setTimeout(r, 250));
+        return [];
+      });
+
+    try {
+      const start = Date.now();
+      await (
+        hooks["chat.message"] as (
+          input: { sessionID?: string },
+          output: { message?: { role?: string; id?: string }; parts?: unknown[] },
+        ) => Promise<void>
+      )(
+        { sessionID: "s1" },
+        { message: { role: "user", id: "m1" }, parts: [{ type: "text", text: "some query" }] },
+      );
+      const elapsed = Date.now() - start;
+      expect(elapsed).toBeLessThan(150);
+    } finally {
+      slowRecall.mockRestore();
+    }
+  });
+
+  it("autoCapture:false is a true fast no-op — never initializes the DB", async () => {
+    const logSpy = vi.fn().mockResolvedValue(undefined);
+    const { ctx, dbPath } = makeContext({ autoCapture: false, logSpy });
+
+    const hooks = await realmemoryPlugin(ctx);
+
+    await (
+      hooks["tool.execute.after"] as (
+        input: { tool: string },
+        output: { args?: Record<string, unknown>; output?: unknown },
+      ) => Promise<void>
+    )(
+      { tool: "read" },
+      { args: { filePath: "/repo/package.json" }, output: "contents" },
+    );
+
+    // Give any accidental initialization time to surface — the store must
+    // never have been created.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(existsSync(dbPath)).toBe(false);
+  });
+
+  it("concurrent rapid tool calls don't throw or drop memories", async () => {
+    const logSpy = vi.fn().mockResolvedValue(undefined);
+    const { ctx, dbPath } = makeContext({ logSpy });
+
+    const hooks = await realmemoryPlugin(ctx);
+
+    // Fire 10 captures concurrently without awaiting each write.
+    const calls: Array<Promise<void>> = [];
+    for (let i = 0; i < 10; i++) {
+      calls.push(
+        (
+          hooks["tool.execute.after"] as (
+            input: { tool: string },
+            output: { args?: Record<string, unknown>; output?: unknown },
+          ) => Promise<void>
+        )(
+          { tool: "read" },
+          { args: { filePath: `/repo/db/migration_${i}.sql` }, output: "contents" },
+        ),
+      );
+    }
+    await Promise.all(calls);
+
+    // Distinct config files -> 10 distinct codebase_fact rows, none dropped.
+    await waitForCaptured(
+      dbPath,
+      deriveProjectId(ctx.directory),
+      "codebase_fact",
+      10,
+      5000,
+    );
   });
 });
 
