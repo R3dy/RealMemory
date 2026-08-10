@@ -29,6 +29,25 @@ vi.mock("../src/browser/server", async (importOriginal) => {
   };
 });
 
+// Mock the MCP stdio transport so in-process startMcpServer calls do NOT grab
+// the vitest worker's real stdin/stdout (which crashes the worker — "Worker
+// exited unexpectedly" — because the transport competes with vitest's own IPC).
+// These tests verify the browser side channel + MCP tool handlers, NOT stdio
+// transport; real stdio is covered by the child-process spawnMcpBin tests.
+vi.mock("@modelcontextprotocol/sdk/server/stdio.js", () => {
+  return {
+    StdioServerTransport: class {
+      start(): Promise<void> {
+        return Promise.resolve();
+      }
+      close(): Promise<void> {
+        return Promise.resolve();
+      }
+      send(): void {}
+    },
+  };
+});
+
 const SIDE_CHANNEL_PORT = 9333;
 const CHILD_EXIT_TIMEOUT_MS = 3000;
 
