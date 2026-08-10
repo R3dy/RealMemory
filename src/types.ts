@@ -216,6 +216,16 @@ export interface MemoryStoreConfig {
    * 0.92. Lower = more aggressive dedup; higher = fewer merges.
    */
   duplicateSimilarityThreshold?: number;
+  /**
+   * Minimum number of distinct project scopes that must have reinforced a
+   * `user_preference` or `task_pattern` memory (via the `store()` near-
+   * duplicate path) before it is automatically promoted from project scope to
+   * global scope. Only `user_preference` and `task_pattern` types are ever
+   * auto-promoted; project-specific types like `codebase_fact` and
+   * `contextual_note` are never promoted regardless of this value. Defaults
+   * to 2.
+   */
+  crossProjectPromotionThreshold?: number;
   maxRecallResults?: number;
   autoCapture?: boolean;
   autoSummarize?: boolean;

@@ -32,6 +32,7 @@ describe("loadConfig()", () => {
     expect(cfg.decayHalfLifeDays).toBe(30);
     expect(cfg.recallThreshold).toBe(0.3);
     expect(cfg.maxRecallResults).toBe(5);
+    expect(cfg.crossProjectPromotionThreshold).toBe(2);
     expect(cfg.autoCapture).toBe(true);
     expect(cfg.autoSummarize).toBe(false);
     expect(cfg.archiveThreshold).toBe(0.05);
@@ -175,6 +176,26 @@ describe("validateConfig()", () => {
     expect(() => validateConfig({ autoStartBrowser: 1 as unknown as boolean })).toThrow(
       /autoStartBrowser/,
     );
+  });
+
+  it("rejects non-positive or non-integer crossProjectPromotionThreshold", () => {
+    expect(() => validateConfig({ crossProjectPromotionThreshold: 0 })).toThrow(
+      /crossProjectPromotionThreshold/,
+    );
+    expect(() => validateConfig({ crossProjectPromotionThreshold: -2 })).toThrow(
+      /crossProjectPromotionThreshold/,
+    );
+    expect(() => validateConfig({ crossProjectPromotionThreshold: 1.5 })).toThrow(
+      /crossProjectPromotionThreshold/,
+    );
+    expect(() => validateConfig({ crossProjectPromotionThreshold: "2" as unknown as number })).toThrow(
+      /crossProjectPromotionThreshold/,
+    );
+  });
+
+  it("accepts a positive-integer crossProjectPromotionThreshold", () => {
+    expect(() => validateConfig({ crossProjectPromotionThreshold: 2 })).not.toThrow();
+    expect(() => validateConfig({ crossProjectPromotionThreshold: 3 })).not.toThrow();
   });
 
   it("accepts boolean autoStartBrowser values", () => {

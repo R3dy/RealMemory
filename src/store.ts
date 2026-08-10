@@ -48,6 +48,17 @@ const VALID_TYPES: ReadonlySet<MemoryType> = new Set<MemoryType>([
   "contextual_note",
 ]);
 
+/**
+ * Memory types eligible for automatic cross-project promotion to global scope.
+ * Only these types encode preferences/behaviors that generalize across
+ * projects; `codebase_fact` and `contextual_note` are project-specific by
+ * nature and are never auto-promoted.
+ */
+const PROMOTABLE_TYPES: ReadonlySet<string> = new Set<string>([
+  "user_preference",
+  "task_pattern",
+]);
+
 const DEFAULT_LIMIT = 50;
 
 /**
@@ -133,6 +144,19 @@ interface JoinRow extends MemoryRow {
   rel_created: string;
 }
 
+/** Parse the JSON-encoded metadata column into an object; corrupt/invalid values become {}. */
+function parseMetadataJson(metadataJson: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(metadataJson) as unknown;
+    if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    // Fall through — invalid/corrupt metadata is treated as empty.
+  }
+  return {};
+}
+
 /** Convert a raw DB row (snake_case, JSON strings) into a public Memory object. */
 function rowToMemory(row: MemoryRow): Memory {
   let tags: string[];
@@ -143,15 +167,7 @@ function rowToMemory(row: MemoryRow): Memory {
     tags = [];
   }
 
-  let metadata: Record<string, unknown>;
-  try {
-    metadata = JSON.parse(row.metadata) as Record<string, unknown>;
-    if (typeof metadata !== "object" || metadata === null || Array.isArray(metadata)) {
-      metadata = {};
-    }
-  } catch {
-    metadata = {};
-  }
+  const metadata = parseMetadataJson(row.metadata);
 
   let embedding: number[] | undefined;
   if (row.embedding) {
@@ -223,6 +239,10 @@ export class MemoryStore {
     return this.config.archiveThreshold ?? 0.05;
   }
 
+  private get crossProjectPromotionThreshold(): number {
+    return this.config.crossProjectPromotionThreshold ?? 2;
+  }
+
   /**
    * Open the database, run migrations, and initialize the embedding provider.
    * Must be called exactly once before any other method. A failure to load a
@@ -257,11 +277,16 @@ export class MemoryStore {
    * keyword mode). If a near-duplicate active memory exists, reinforces it —
    * bumping `reinforcementCount` and boosting confidence with diminishing
    * returns — and returns the reinforced memory instead of inserting a new
-   * row. This is a contract change: `store()` no longer guarantees a fresh
-   * row per call. Otherwise it computes the initial composite weight, inserts
-   * the row, computes and persists its embedding (best-effort, never blocks
-   * on failure), and creates any supplied relationships. Returns the
-   * canonical Memory record.
+   * row. When the near-duplicate belongs to a DIFFERENT project (a
+   * cross-project reinforcement), the reinforcing project is recorded in the
+   * memory's `metadata.crossProjectReinforcements`; once enough distinct
+   * projects have reinforced a `user_preference`/`task_pattern` memory (see
+   * `crossProjectPromotionThreshold`, default 2), it is promoted to global
+   * scope so every project can see it. This is a contract change: `store()`
+   * no longer guarantees a fresh row per call. Otherwise it computes the
+   * initial composite weight, inserts the row, computes and persists its
+   * embedding (best-effort, never blocks on failure), and creates any supplied
+   * relationships. Returns the canonical Memory record.
    */
   async store(input: StoreInput): Promise<Memory> {
     const db = this.requireDb();
@@ -288,6 +313,36 @@ export class MemoryStore {
     //    new row exists to attach them to.
     const duplicate = await this.findDuplicate(content, input.type, scope);
     if (duplicate) {
+      // Cross-project reinforcement: when the near-duplicate was created by a
+      // different project than this store's, record this store's project in
+      // the memory's `metadata.crossProjectReinforcements`. Once enough
+      // distinct projects have reinforced a promotable memory
+      // (`user_preference`/`task_pattern`), promote it to global scope. The
+      // threshold check counts the origin project plus every reinforcing
+      // project in the metadata array.
+      if (
+        duplicate.project_id !== null &&
+        duplicate.project_id !== this.config.projectId
+      ) {
+        const existingMetadata = parseMetadataJson(duplicate.metadata);
+        const existing = Array.isArray(existingMetadata.crossProjectReinforcements)
+          ? (existingMetadata.crossProjectReinforcements as unknown[]).filter(
+              (p): p is string => typeof p === "string",
+            )
+          : [];
+        // Reinforcing projects recorded so far (excluding the origin project,
+        // which is implicit). Deduped; a store with no projectId records none.
+        const reinforcingProjects = this.config.projectId
+          ? Array.from(new Set([...existing, this.config.projectId]))
+          : [...existing];
+        if (this.shouldPromoteToGlobal(duplicate, reinforcingProjects)) {
+          this.promoteToGlobal(duplicate.id);
+        }
+        return this.update(duplicate.id, {
+          reinforce: true,
+          metadata: { crossProjectReinforcements: reinforcingProjects },
+        });
+      }
       return this.update(duplicate.id, { reinforce: true });
     }
 
@@ -377,18 +432,28 @@ export class MemoryStore {
   }
 
   /**
-   * Find an existing active memory in the same scope and type that holds a
-   * near-duplicate of the given content. Returns the matching row, or null
-   * when no duplicate exists. Used by {@link store} to reinforce an existing
-   * memory instead of inserting a second row.
+   * Find an existing active memory that holds a near-duplicate of the given
+   * content and type. Returns the matching row, or null when no duplicate
+   * exists. Used by {@link store} to reinforce an existing memory instead of
+   * inserting a second row.
+   *
+   * Scope handling differs from recall on purpose: for a project-scoped
+   * `store()`, near-duplicate candidates include memories owned by ANY project
+   * (plus global memories) — not just the current project's own rows. This is
+   * what lets a cross-project reinforcement be detected: when project B stores
+   * content that project A already holds, the matching row belongs to A, and
+   * {@link store} promotes the memory to global scope once enough distinct
+   * projects have reinforced it. A global-scoped `store()` still only matches
+   * global memories, preserving the project/global boundary. The matching
+   * RULES (thresholds below) are unchanged.
    *
    * Two modes mirror the recall engine:
    * - Embedding mode (an embedding provider is configured): embed the content
-   *   and score every same-scope/same-type active memory by cosine
-   *   similarity. A score at or above `duplicateSimilarityThreshold` (default
-   *   0.92) marks a duplicate. Memories without a stored embedding are
-   *   skipped. If the embedding computation itself fails, we fall back to the
-   *   keyword gate below — the same best-effort posture the insert path uses.
+   *   and score every candidate memory by cosine similarity. A score at or
+   *   above `duplicateSimilarityThreshold` (default 0.92) marks a duplicate.
+   *   Memories without a stored embedding are skipped. If the embedding
+   *   computation itself fails, we fall back to the keyword gate below — the
+   *   same best-effort posture the insert path uses.
    * - Keyword mode (no embedding provider): reuse the FTS5 index for
    *   candidates, then require both a high normalized bm25 relevance
    *   (`DUPLICATE_KEYWORD_RELEVANCE`) and a near-exact token-set overlap
@@ -402,12 +467,19 @@ export class MemoryStore {
     scope: MemoryScope,
   ): Promise<MemoryRow | null> {
     const db = this.requireDb();
-    // Same scope + same type as the incoming memory. The plain filter serves
-    // the direct SELECT; the "m."-prefixed one disambiguates the FTS join.
-    // `query` is unused by buildRecallFilter — only scope/types/tags are read.
-    const recallFilter: RecallQuery = { query: content, scope, types: [type] };
-    const plainFilter = this.buildRecallFilter(recallFilter);
-    const joinFilter = this.buildRecallFilter(recallFilter, "m.");
+    // Same type as the incoming memory. The project scope clause is omitted so
+    // a project-scoped store() sees near-duplicates from every project (and
+    // global memories); only a global-scoped store() narrows to global rows.
+    const where: string[] = ["status = 'active'", "type = ?"];
+    const params: unknown[] = [type];
+    const joinWhere: string[] = ["m.status = 'active'", "m.type = ?"];
+    const joinParams: unknown[] = [type];
+    if (scope === "global") {
+      where.push("project_id IS NULL");
+      joinWhere.push("m.project_id IS NULL");
+    }
+    const whereSql = where.join(" AND ");
+    const joinWhereSql = joinWhere.join(" AND ");
 
     // Embedding mode: cosine similarity against every same-scope/type active
     // memory.
@@ -415,8 +487,8 @@ export class MemoryStore {
       try {
         const vec = await this.embeddingProvider.embed(content);
         const rows = db
-          .prepare(`SELECT * FROM memories WHERE ${plainFilter.whereSql}`)
-          .all(...plainFilter.params) as unknown as MemoryRow[];
+          .prepare(`SELECT * FROM memories WHERE ${whereSql}`)
+          .all(...params) as unknown as MemoryRow[];
         const threshold = this.config.duplicateSimilarityThreshold ?? 0.92;
         let best: MemoryRow | null = null;
         let bestSim = -1;
@@ -446,11 +518,11 @@ export class MemoryStore {
         `SELECT m.*, bm25(memories_fts) AS fts_score
          FROM memories_fts
          JOIN memories m ON m.rowid = memories_fts.rowid
-         WHERE memories_fts MATCH ? AND ${joinFilter.whereSql}
+         WHERE memories_fts MATCH ? AND ${joinWhereSql}
          ORDER BY bm25(memories_fts) ASC
          LIMIT 20`,
       )
-      .all(ftsQuery, ...joinFilter.params) as unknown as Array<MemoryRow & { fts_score: number }>;
+      .all(ftsQuery, ...joinParams) as unknown as Array<MemoryRow & { fts_score: number }>;
     if (candidates.length === 0) return null;
 
     // Normalize bm25 the same way recall does (best match → 1.0), then require
@@ -465,6 +537,42 @@ export class MemoryStore {
       return candidates[i];
     }
     return null;
+  }
+
+  /**
+   * Whether a near-duplicate memory should be promoted to global scope after a
+   * cross-project reinforcement. Requires a promotable type
+   * (`user_preference`/`task_pattern`), a project scope (never re-promotes an
+   * already-global memory), and at least `crossProjectPromotionThreshold`
+   * distinct projects contributing to the memory — the origin project plus
+   * every project recorded in `reinforcingProjects`.
+   */
+  private shouldPromoteToGlobal(
+    duplicate: MemoryRow,
+    reinforcingProjects: string[],
+  ): boolean {
+    // Idempotency: an already-global memory is never re-promoted.
+    if (duplicate.scope === "global") return false;
+    // Only preferences/behavior patterns generalize across projects.
+    if (!PROMOTABLE_TYPES.has(duplicate.type)) return false;
+    const distinctProjects = new Set([duplicate.project_id!, ...reinforcingProjects]).size;
+    return distinctProjects >= this.crossProjectPromotionThreshold;
+  }
+
+  /**
+   * Promote a project-scoped memory to global scope. Used by the `store()`
+   * dedup path once a `user_preference`/`task_pattern` memory has been
+   * reinforced by enough distinct projects. A direct SQL UPDATE because
+   * {@link UpdatePatch} intentionally cannot change `scope`/`project_id`.
+   */
+  private promoteToGlobal(id: string): void {
+    const db = this.requireDb();
+    db.prepare(
+      "UPDATE memories SET scope = 'global', project_id = NULL, updated_at = ? WHERE id = ?",
+    ).run(new Date().toISOString(), id);
+    console.log(
+      `[realmemory] Promoted memory ${id} to global scope after cross-project reinforcement`,
+    );
   }
 
   /**

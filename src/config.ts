@@ -12,6 +12,7 @@ const DEFAULTS: Required<
     | "decayIntervalHours"
     | "recallThreshold"
     | "duplicateSimilarityThreshold"
+    | "crossProjectPromotionThreshold"
     | "maxRecallResults"
     | "autoCapture"
     | "autoSummarize"
@@ -26,6 +27,7 @@ const DEFAULTS: Required<
   decayIntervalHours: 24,
   recallThreshold: 0.3,
   duplicateSimilarityThreshold: 0.92,
+  crossProjectPromotionThreshold: 2,
   maxRecallResults: 5,
   autoCapture: true,
   autoSummarize: false,
@@ -99,6 +101,13 @@ export function validateConfig(config: MemoryStoreConfig): void {
     (config.duplicateSimilarityThreshold < 0 || config.duplicateSimilarityThreshold > 1)
   ) {
     throw new Error("duplicateSimilarityThreshold must be in [0, 1]");
+  }
+  if (
+    config.crossProjectPromotionThreshold !== undefined &&
+    (!Number.isInteger(config.crossProjectPromotionThreshold) ||
+      config.crossProjectPromotionThreshold < 1)
+  ) {
+    throw new Error("crossProjectPromotionThreshold must be a positive integer");
   }
   if (
     config.archiveThreshold !== undefined &&
