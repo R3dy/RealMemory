@@ -59,14 +59,20 @@ if (ui) {
   // (`{ ...loadConfig(), autoStartBrowser: false }`) carries the user's
   // file-merged config plus the defeat flag, and startMcpServer's
   // `config ?? loadConfig()` uses it verbatim (no second file read).
-  startMcpServer({ ...loadConfig(), autoStartBrowser: false }).catch((err: unknown) => {
+  startMcpServer(
+    { ...loadConfig(), autoStartBrowser: false },
+    { ownLifecycle: true },
+  ).catch((err: unknown) => {
     console.error("[realmemory] MCP server failed to start:", err);
     process.exit(1);
   });
 } else {
   // Default mode: the MCP stdio server (which now also auto-starts the
   // read-only graph browser as a side channel at 127.0.0.1:9333 by default).
-  startMcpServer().catch((err: unknown) => {
+  // ownLifecycle: true — the CLI entry owns the process and installs the
+  // SIGINT/SIGTERM shutdown handler that closes both servers + the store and
+  // exits 0 (a library caller would pass false and manage cleanup itself).
+  startMcpServer(undefined, { ownLifecycle: true }).catch((err: unknown) => {
     console.error("[realmemory] MCP server failed to start:", err);
     process.exit(1);
   });
