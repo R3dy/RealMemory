@@ -38,10 +38,10 @@ export const INDEX_HTML = `<!doctype html>
   }
   header h1 { font-size: 14px; font-weight: 600; color: var(--accent); }
   header .count { color: var(--text-dim); font-size: 12px; }
-  #app { display: grid; grid-template-columns: 260px 1fr 340px; height: calc(100vh - 44px - 32px); }
+  #app { display: grid; grid-template-columns: 260px 1fr 340px; grid-template-rows: 1fr; height: calc(100vh - 44px - 32px); }
   aside#filters {
     border-right: 1px solid var(--border); padding: 12px; overflow-y: auto;
-    background: var(--bg-elev);
+    background: var(--bg-elev); min-height: 0;
   }
   aside#filters h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .5px; color: var(--text-dim); margin-bottom: 8px; }
   aside#filters .group { margin-bottom: 16px; }
@@ -59,7 +59,7 @@ export const INDEX_HTML = `<!doctype html>
     border-radius: 4px; cursor: pointer; font-size: 13px; font-weight: 600;
   }
   aside#filters button:hover { filter: brightness(1.1); }
-  main#network-wrap { position: relative; background: var(--bg); }
+  main#network-wrap { position: relative; background: var(--bg); overflow: hidden; min-height: 0; }
   #network { width: 100%; height: 100%; }
   #empty-msg {
     position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
@@ -68,7 +68,7 @@ export const INDEX_HTML = `<!doctype html>
   #empty-msg.show { display: flex; }
   aside#detail {
     border-left: 1px solid var(--border); padding: 12px; overflow-y: auto;
-    background: var(--bg-elev);
+    background: var(--bg-elev); min-height: 0;
   }
   aside#detail .placeholder { color: var(--text-dim); font-size: 13px; text-align: center; margin-top: 40px; }
   aside#detail h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .5px; color: var(--text-dim); margin-bottom: 6px; }
@@ -227,6 +227,7 @@ async function fetchGraph() {
       if (params.nodes.length > 0) showDetail(params.nodes[0]);
       else showPlaceholder();
     });
+    network.once('stabilizationIterationsDone', function() { network.fit(); });
   }
 }
 
