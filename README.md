@@ -39,6 +39,10 @@ realmemory gives agents what they're missing:
 
 After editing `opencode.json`, restart OpenCode. The plugin initializes a SQLite database at `~/.opencode/realmemory/data.db` (configurable — see [Configuration](#configuration)) and begins capturing and recalling immediately.
 
+### OpenCode skill
+
+realmemory ships an OpenCode skill at `skills/realmemory/SKILL.md` that gives the agent proactive memory-use guidance — when to `recall` at the start of a task, when to `store_memory` (preferences, hard-won facts, decisions, working approaches), and how to reinforce existing memories instead of duplicating them. OpenCode discovers the skill automatically from the plugin's `skills/` directory. It complements the automatic hooks, which run regardless; it does not replace them.
+
 ## Quick start
 
 1. **Add to `opencode.json`** — `"plugin": ["realmemory"]` (npm) or the git URL above.
