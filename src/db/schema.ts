@@ -83,7 +83,21 @@ CREATE INDEX IF NOT EXISTS idx_relationships_source ON relationships(source_id);
 CREATE INDEX IF NOT EXISTS idx_relationships_target ON relationships(target_id);
 `;
 
-export const CURRENT_SCHEMA_VERSION = 1;
+/**
+ * Schema version 2 — adds the `meta` key-value table.
+ *
+ * The meta table stores small durable key/value settings used by the store,
+ * e.g. `decay:lastRun` (the ISO timestamp of the most recent decay pass),
+ * so that rate-limiting survives process restarts against the same DB file.
+ */
+export const SCHEMA_V2 = `
+CREATE TABLE IF NOT EXISTS meta (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+`;
+
+export const CURRENT_SCHEMA_VERSION = 2;
 
 /**
  * Migrations map: version -> SQL to apply.
@@ -91,6 +105,7 @@ export const CURRENT_SCHEMA_VERSION = 1;
  */
 const MIGRATIONS: Record<number, string> = {
   1: SCHEMA_V1,
+  2: SCHEMA_V2,
 };
 
 /**
