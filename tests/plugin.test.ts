@@ -89,6 +89,40 @@ function makeMemory(overrides: Partial<Memory> = {}): Memory {
   };
 }
 
+/**
+ * Wait until the plugin's own DB (read through a single fresh connection that
+ * stays open for the whole wait) shows `count` memories of the given type.
+ * Auto-capture hooks are fire-and-forget: the hook resolves before the detached
+ * write lands, so assertions that depend on the capture reaching the DB must
+ * poll. The connection is opened once — repeated DDL during concurrent writes
+ * would contend for the SQLite write lock.
+ */
+async function waitForCaptured(
+  dbPath: string,
+  projectId: string,
+  type: "codebase_fact" | "lesson_learned",
+  count: number,
+  timeoutMs = 3000,
+): Promise<void> {
+  const verifyStore = new MemoryStore({
+    storagePath: dbPath,
+    projectId,
+    embeddingModel: null,
+  });
+  await verifyStore.init();
+  try {
+    await vi.waitFor(
+      async () => {
+        const list = await verifyStore.list({ scope: "all", limit: 50 });
+        expect(list.memories.filter((m) => m.type === type).length).toBe(count);
+      },
+      { timeout: timeoutMs, interval: 20 },
+    );
+  } finally {
+    await verifyStore.close();
+  }
+}
+
 beforeEach(() => {
   tempDir = mkdtempSync(join(tmpdir(), "realmemory-plugin-"));
 });
@@ -365,6 +399,9 @@ describe("tool.execute.after hook", () => {
       { args: { filePath: "/repo/package.json" }, output: "file contents" },
     );
 
+    // The hook resolves before the detached write lands — poll for the capture.
+    await waitForCaptured(dbPath, deriveProjectId(ctx.directory), "codebase_fact", 1);
+
     // Verify the memory was stored in the DB.
     const verifyStore = new MemoryStore({
       storagePath: dbPath,
@@ -397,6 +434,8 @@ describe("tool.execute.after hook", () => {
       { args: { filePath: "/src/foo.ts" }, output: "source code" },
     );
 
+    await waitForCaptured(dbPath, deriveProjectId(ctx.directory), "codebase_fact", 0);
+
     const verifyStore = new MemoryStore({
       storagePath: dbPath,
       projectId: deriveProjectId(ctx.directory),
@@ -426,6 +465,8 @@ describe("tool.execute.after hook", () => {
         output: "error: module not found",
       },
     );
+
+    await waitForCaptured(dbPath, deriveProjectId(ctx.directory), "lesson_learned", 1);
 
     const verifyStore = new MemoryStore({
       storagePath: dbPath,
@@ -458,6 +499,8 @@ describe("tool.execute.after hook", () => {
       { args: { command: "echo hello" }, output: "hello\n" },
     );
 
+    await waitForCaptured(dbPath, deriveProjectId(ctx.directory), "lesson_learned", 0);
+
     const verifyStore = new MemoryStore({
       storagePath: dbPath,
       projectId: deriveProjectId(ctx.directory),
@@ -484,6 +527,8 @@ describe("tool.execute.after hook", () => {
       { tool: "read" },
       { args: { filePath: "/repo/package.json" }, output: "contents" },
     );
+
+    await waitForCaptured(dbPath, deriveProjectId(ctx.directory), "codebase_fact", 0);
 
     const verifyStore = new MemoryStore({
       storagePath: dbPath,
@@ -531,11 +576,14 @@ describe("message.updated hook", () => {
       {},
     );
 
-    const recallCalls = logSpy.mock.calls.filter((c) => {
-      const body = (c[0] as { body?: { message?: string } })?.body;
-      return body?.message?.includes("Auto-recalled");
-    });
-    expect(recallCalls.length).toBeGreaterThan(0);
+    // Recall runs on a detached promise — wait for the background log call.
+    await vi.waitFor(() => {
+      const recallCalls = logSpy.mock.calls.filter((c) => {
+        const body = (c[0] as { body?: { message?: string } })?.body;
+        return body?.message?.includes("Auto-recalled");
+      });
+      expect(recallCalls.length).toBeGreaterThan(0);
+    }, { timeout: 3000 });
   });
 
   it("does NOT trigger recall for assistant messages", async () => {
@@ -617,7 +665,8 @@ describe("deduplication", () => {
     expect(firstRecallCalls.length).toBe(1);
 
     // 2. message.updated with content that would match the same memory.
-    //    Dedup should skip it (no new recall log).
+    //    Dedup should skip it (no new recall log). The hook is fire-and-forget,
+    //    so wait long enough for the detached recall to actually run.
     await (
       hooks["message.updated"] as (
         input: { message?: { role?: string; content?: string } },
@@ -632,6 +681,7 @@ describe("deduplication", () => {
       },
       {},
     );
+    await new Promise((r) => setTimeout(r, 200));
 
     // Still only 1 recall log — the second call was deduped.
     const allRecallCalls = logSpy.mock.calls.filter((c) => {
@@ -671,7 +721,8 @@ describe("lazy initialization", () => {
 
     const hooks = await realmemoryPlugin(ctx);
 
-    // First call inits the store.
+    // Both hook calls resolve immediately (fire-and-forget); the detached
+    // writes land after. Poll until both captures are present.
     await (
       hooks["tool.execute.after"] as (
         input: { tool: string },
@@ -681,8 +732,6 @@ describe("lazy initialization", () => {
       { tool: "read" },
       { args: { filePath: "/repo/package.json" }, output: "contents" },
     );
-
-    // Second call should reuse the same store (no re-init, no error).
     await (
       hooks["tool.execute.after"] as (
         input: { tool: string },
@@ -693,7 +742,9 @@ describe("lazy initialization", () => {
       { args: { filePath: "/repo/tsconfig.json" }, output: "contents" },
     );
 
-    // Both captures should be in the same DB.
+    // Both captures should land in the same DB.
+    await waitForCaptured(dbPath, deriveProjectId(ctx.directory), "codebase_fact", 2);
+
     const verifyStore = new MemoryStore({
       storagePath: dbPath,
       projectId: deriveProjectId(ctx.directory),
@@ -705,6 +756,128 @@ describe("lazy initialization", () => {
 
     const facts = list.memories.filter((m) => m.type === "codebase_fact");
     expect(facts.length).toBe(2);
+  });
+});
+
+/* ------------------- non-blocking hooks (issue #9) ------------------- */
+
+describe("non-blocking hooks", () => {
+  it("tool.execute.after resolves well before the store write finishes", async () => {
+    const logSpy = vi.fn().mockResolvedValue(undefined);
+    const { ctx } = makeContext({ logSpy });
+
+    const hooks = await realmemoryPlugin(ctx);
+
+    // Make the underlying store write take 250ms while the hook itself must
+    // resolve in a tiny fraction of that (fire-and-forget).
+    const slowWrite = vi
+      .spyOn(MemoryStore.prototype, "store")
+      .mockImplementation(async function slowStore(): Promise<Memory> {
+        await new Promise((r) => setTimeout(r, 250));
+        return makeMemory({ id: "slow-memory" });
+      });
+
+    try {
+      const start = Date.now();
+      await (
+        hooks["tool.execute.after"] as (
+          input: { tool: string },
+          output: { args?: Record<string, unknown>; output?: unknown },
+        ) => Promise<void>
+      )(
+        { tool: "read" },
+        { args: { filePath: "/repo/package.json" }, output: "contents" },
+      );
+      const elapsed = Date.now() - start;
+      expect(elapsed).toBeLessThan(150);
+    } finally {
+      slowWrite.mockRestore();
+    }
+  });
+
+  it("the message recall hook resolves well before the recall finishes", async () => {
+    const logSpy = vi.fn().mockResolvedValue(undefined);
+    const { ctx } = makeContext({ logSpy });
+
+    const hooks = await realmemoryPlugin(ctx);
+
+    // Make the underlying recall take 250ms while the hook itself must resolve
+    // in a tiny fraction of that.
+    const slowRecall = vi
+      .spyOn(MemoryStore.prototype, "recall")
+      .mockImplementation(async function slowRecall(): Promise<RecallResult[]> {
+        await new Promise((r) => setTimeout(r, 250));
+        return [];
+      });
+
+    try {
+      const start = Date.now();
+      await (
+        hooks["message.updated"] as (
+          input: { message?: { role?: string; content?: string } },
+          output: unknown,
+        ) => Promise<void>
+      )({ message: { role: "human", content: "some query" } }, {});
+      const elapsed = Date.now() - start;
+      expect(elapsed).toBeLessThan(150);
+    } finally {
+      slowRecall.mockRestore();
+    }
+  });
+
+  it("autoCapture:false is a true fast no-op — never initializes the DB", async () => {
+    const logSpy = vi.fn().mockResolvedValue(undefined);
+    const { ctx, dbPath } = makeContext({ autoCapture: false, logSpy });
+
+    const hooks = await realmemoryPlugin(ctx);
+
+    await (
+      hooks["tool.execute.after"] as (
+        input: { tool: string },
+        output: { args?: Record<string, unknown>; output?: unknown },
+      ) => Promise<void>
+    )(
+      { tool: "read" },
+      { args: { filePath: "/repo/package.json" }, output: "contents" },
+    );
+
+    // Give any accidental initialization time to surface — the store must
+    // never have been created.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(existsSync(dbPath)).toBe(false);
+  });
+
+  it("concurrent rapid tool calls don't throw or drop memories", async () => {
+    const logSpy = vi.fn().mockResolvedValue(undefined);
+    const { ctx, dbPath } = makeContext({ logSpy });
+
+    const hooks = await realmemoryPlugin(ctx);
+
+    // Fire 10 captures concurrently without awaiting each write.
+    const calls: Array<Promise<void>> = [];
+    for (let i = 0; i < 10; i++) {
+      calls.push(
+        (
+          hooks["tool.execute.after"] as (
+            input: { tool: string },
+            output: { args?: Record<string, unknown>; output?: unknown },
+          ) => Promise<void>
+        )(
+          { tool: "read" },
+          { args: { filePath: `/repo/db/migration_${i}.sql` }, output: "contents" },
+        ),
+      );
+    }
+    await Promise.all(calls);
+
+    // Distinct config files -> 10 distinct codebase_fact rows, none dropped.
+    await waitForCaptured(
+      dbPath,
+      deriveProjectId(ctx.directory),
+      "codebase_fact",
+      10,
+      5000,
+    );
   });
 });
 

@@ -25,6 +25,8 @@ interface PluginState {
   config: MemoryStoreConfig | null;
   injectedMemoryIds: Set<string>;
   initialized: boolean;
+  /** Shared in-flight init promise so concurrent detached hooks init once. */
+  initPromise: Promise<MemoryStore> | null;
 }
 
 /** Check if a file path looks like a config, schema, or route file worth capturing. */
@@ -80,9 +82,10 @@ export function formatRecallResults(results: RecallResult[]): string {
  * then returns the hook handlers:
  *   - `event` — auto-recall on `session.created`, auto-summarize on `session.idle`
  *   - `tool.execute.after` — auto-capture learnings (file reads on config/schema
- *     files become `codebase_fact`s; bash errors become `lesson_learned`s)
+ *     files become `codebase_fact`s; bash errors become `lesson_learned`s);
+ *     fire-and-forget so a slow write never blocks the tool loop
  *   - `message.updated` — auto-recall on user messages, deduplicated against
- *     memories already injected this session
+ *     memories already injected this session; fire-and-forget
  *
  * @returns the hook handler map OpenCode installs the plugin's handlers from.
  */
@@ -91,30 +94,51 @@ export default async function realmemoryPlugin(
 ): Promise<Record<string, unknown>> {
   const state: PluginState = {
     store: null,
-    config: null,
+    // Load config eagerly (a synchronous file read — no DB touch) so hooks
+    // can honor switches like `autoCapture: false` BEFORE any store init.
+    config: {
+      ...loadConfig(ctx.directory),
+      projectId: deriveProjectId(ctx.directory),
+    },
     injectedMemoryIds: new Set(),
     initialized: false,
+    initPromise: null,
   };
 
+  /**
+   * Lazily create and initialize the MemoryStore. Concurrent calls (e.g. two
+   * detached hook promises firing at once) share a single in-flight init so the
+   * store is only ever constructed and initialized once — no double-opens of the
+   * SQLite file, no double migration runs. A failed init clears the shared
+   * promise so a later call can retry.
+   */
   async function getStore(): Promise<MemoryStore> {
-    if (!state.initialized) {
-      state.config = {
-        ...loadConfig(ctx.directory),
-        projectId: deriveProjectId(ctx.directory),
-      };
-      state.store = new MemoryStore(state.config);
-      await state.store.init();
-      state.initialized = true;
+    if (state.initialized) return state.store!;
+    if (!state.initPromise) {
+      state.initPromise = (async () => {
+        const store = new MemoryStore(state.config as MemoryStoreConfig);
+        await store.init();
+        state.store = store;
+        state.initialized = true;
+        return store;
+      })().catch((error) => {
+        state.initPromise = null;
+        throw error;
+      });
     }
-    return state.store!;
+    return state.initPromise;
   }
 
   async function log(level: string, message: string, extra?: unknown): Promise<void> {
-    const client = ctx.client as {
-      app?: { log?: (args: unknown) => Promise<void> };
-    };
-    if (client?.app?.log) {
-      await client.app.log({ body: { service: "realmemory", level, message, extra } });
+    try {
+      const client = ctx.client as {
+        app?: { log?: (args: unknown) => Promise<void> };
+      };
+      if (client?.app?.log) {
+        await client.app.log({ body: { service: "realmemory", level, message, extra } });
+      }
+    } catch {
+      // Logging must never break hook execution or produce unhandled rejections.
     }
   }
 
@@ -197,105 +221,119 @@ export default async function realmemoryPlugin(
     },
 
     // On tool execution: auto-capture learnings (if enabled, default true).
-    "tool.execute.after": async (
-      input: { tool: string },
+    // Non-blocking: the handler resolves immediately and all store work (DB
+    // init + write) runs on a detached promise, so a slow write never blocks
+    // the tool loop. Errors are logged, never thrown out of the handler.
+    "tool.execute.after": (
+      input: { tool: string; args?: Record<string, unknown> },
       output: { args?: Record<string, unknown>; output?: unknown },
     ) => {
-      try {
-        const store = await getStore();
-        const config = state.config as { autoCapture?: boolean };
-        if (config.autoCapture === false) return;
+      // Fast no-op: when auto-capture is disabled, return BEFORE any DB touch —
+      // getStore() (and thus store init) never runs when disabled.
+      const captureConfig = state.config as { autoCapture?: boolean } | null;
+      if (captureConfig?.autoCapture === false) return;
 
-        // Read tool on config/schema/route files -> codebase_fact.
-        if (input.tool === "read") {
-          const filePath =
-            (output.args as { filePath?: string } | undefined)?.filePath || "";
-          if (isConfigOrSchemaFile(filePath)) {
-            await store.store({
-              content: `Read ${filePath}`,
-              type: "codebase_fact",
-              scope: "project",
-              confidence: 0.3,
-              tags: ["auto-captured", "file-read"],
-              metadata: { source: "tool.execute.after", tool: "read", filePath },
-            });
-            await log("debug", `Auto-captured codebase_fact for ${filePath}`);
-          }
-        }
+      void (async () => {
+        try {
+          const store = await getStore();
+          // Accept args from either position: the real OpenCode runtime passes
+          // them on `input.args`; older callers/tests used `output.args`.
+          const args = input?.args ?? output?.args ?? {};
 
-        // Bash tool on errors -> lesson_learned.
-        if (input.tool === "bash") {
-          const command =
-            (output.args as { command?: string } | undefined)?.command || "";
-          const result = String(output.output || "");
-          if (isErrorResult(result)) {
-            await store.store({
-              content: `Command failed: ${command.slice(0, 200)} → ${result.slice(0, 200)}`,
-              type: "lesson_learned",
-              scope: "project",
-              confidence: 0.4,
-              tags: ["auto-captured", "bash-error"],
-              metadata: {
-                source: "tool.execute.after",
-                tool: "bash",
-                command,
-                severity: "medium",
-              },
-            });
-            await log("debug", "Auto-captured lesson_learned from bash error");
+          // Read tool on config/schema/route files -> codebase_fact.
+          if (input.tool === "read") {
+            const filePath = (args as { filePath?: string })?.filePath || "";
+            if (isConfigOrSchemaFile(filePath)) {
+              await store.store({
+                content: `Read ${filePath}`,
+                type: "codebase_fact",
+                scope: "project",
+                confidence: 0.3,
+                tags: ["auto-captured", "file-read"],
+                metadata: { source: "tool.execute.after", tool: "read", filePath },
+              });
+              await log("debug", `Auto-captured codebase_fact for ${filePath}`);
+            }
           }
+
+          // Bash tool on errors -> lesson_learned.
+          if (input.tool === "bash") {
+            const command = (args as { command?: string })?.command || "";
+            const result = String(output?.output ?? "");
+            if (isErrorResult(result)) {
+              await store.store({
+                content: `Command failed: ${command.slice(0, 200)} → ${result.slice(0, 200)}`,
+                type: "lesson_learned",
+                scope: "project",
+                confidence: 0.4,
+                tags: ["auto-captured", "bash-error"],
+                metadata: {
+                  source: "tool.execute.after",
+                  tool: "bash",
+                  command,
+                  severity: "medium",
+                },
+              });
+              await log("debug", "Auto-captured lesson_learned from bash error");
+            }
+          }
+          // Write/Edit -> no capture (too noisy).
+        } catch (error) {
+          await log(
+            "error",
+            `Auto-capture failed: ${error instanceof Error ? error.message : String(error)}`,
+          );
         }
-        // Write/Edit -> no capture (too noisy).
-      } catch (error) {
-        await log(
-          "error",
-          `Auto-capture failed: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
+      })();
     },
 
     // On user message: auto-recall if the message matches stored memories.
-    "message.updated": async (
+    // Non-blocking: recall runs on a detached promise; the handler resolves
+    // immediately so a slow recall never delays message processing. Errors are
+    // logged, never thrown out of the handler.
+    "message.updated": (
       input: { message?: { role?: string; content?: string } },
       _output: unknown,
     ) => {
-      try {
-        const content = input?.message?.content;
-        const role = input?.message?.role;
-        if (role !== "human" || !content) return;
+      const content = input?.message?.content;
+      const role = input?.message?.role;
+      if (role !== "human" || !content) return;
 
-        const store = await getStore();
-        const config = state.config as {
-          recallThreshold?: number;
-          maxRecallResults?: number;
-        };
-        const results = await store.recall({
-          query: content,
-          scope: "all",
-          limit: 3,
-          threshold: config.recallThreshold || 0.3,
-          traverse: true,
-        });
+      void (async () => {
+        try {
+          const store = await getStore();
+          const config = state.config as {
+            recallThreshold?: number;
+            maxRecallResults?: number;
+          };
+          const results = await store.recall({
+            query: content,
+            scope: "all",
+            limit: 3,
+            threshold: config.recallThreshold || 0.3,
+            traverse: true,
+          });
 
-        // Deduplicate: skip memories already injected this session.
-        const newResults = results.filter(
-          (r) => !state.injectedMemoryIds.has(r.memory.id),
-        );
-        if (newResults.length === 0) return;
+          // Deduplicate: skip memories already injected this session.
+          const newResults = results.filter(
+            (r) => !state.injectedMemoryIds.has(r.memory.id),
+          );
+          if (newResults.length === 0) return;
 
-        newResults.forEach((r) => state.injectedMemoryIds.add(r.memory.id));
-        const formatted = formatRecallResults(newResults);
-        await log("info", `Auto-recalled ${newResults.length} memories for user message`);
-        // The formatted text would be injected into the agent's context.
-        // For MVP, we log it — the actual injection mechanism depends on the
-        // OpenCode API (e.g. tui.prompt.append or a system message hook).
-        void formatted;
-      } catch (error) {
-        await log(
-          "error",
-          `Message recall failed: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
+          newResults.forEach((r) => state.injectedMemoryIds.add(r.memory.id));
+          const formatted = formatRecallResults(newResults);
+          await log("info", `Auto-recalled ${newResults.length} memories for user message`);
+          // The formatted text would be injected into the agent's context.
+          // For MVP, we log it — the actual injection mechanism depends on the
+          // OpenCode API (e.g. tui.prompt.append or a system message hook).
+          void formatted;
+        } catch (error) {
+          await log(
+            "error",
+            `Message recall failed: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      })();
     },
   };
 }
