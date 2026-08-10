@@ -150,25 +150,29 @@ export function createMcpTools(store: MemoryStore): McpToolHandler[] {
   return [
     {
       name: "store_memory",
-      description: "Store a new memory",
+      description:
+        "Store a new memory. Use when you learn a preference, fact, decision, or lesson worth recalling in future sessions.",
       inputSchema: zodToInputSchema(storeMemorySchema),
       handler: async (args) => store.store(storeMemorySchema.parse(args)),
     },
     {
       name: "recall",
-      description: "Semantic search for relevant memories",
+      description:
+        "Semantic search for relevant memories. Use at the start of a task to surface prior context, or when you suspect past work is relevant.",
       inputSchema: zodToInputSchema(recallSchema),
       handler: async (args) => store.recall(recallSchema.parse(args)),
     },
     {
       name: "search",
-      description: "Structured search with filters",
+      description:
+        "Structured search with filters (scope/type/tags/weight/date). Use when you need a deterministic filtered query, not semantic relevance.",
       inputSchema: zodToInputSchema(searchSchema),
       handler: async (args) => store.search(searchSchema.parse(args)),
     },
     {
       name: "relate",
-      description: "Create a typed relationship between two memories",
+      description:
+        "Create a typed relationship between two memories (reinforces/contradicts/extends/etc). Use when two memories are structurally connected.",
       inputSchema: zodToInputSchema(relateSchema),
       handler: async (args) => {
         const p = relateSchema.parse(args);
@@ -177,7 +181,8 @@ export function createMcpTools(store: MemoryStore): McpToolHandler[] {
     },
     {
       name: "update_memory",
-      description: "Update an existing memory",
+      description:
+        "Update an existing memory (content, tags, confidence, metadata, reinforce). Use reinforce:true instead of re-storing when you see a near-duplicate.",
       inputSchema: zodToInputSchema(updateMemorySchema),
       handler: async (args) => {
         const p = updateMemorySchema.parse(args);
@@ -186,7 +191,8 @@ export function createMcpTools(store: MemoryStore): McpToolHandler[] {
     },
     {
       name: "forget",
-      description: "Archive or delete a memory",
+      description:
+        "Archive or hard-delete a memory. Use when a memory is wrong, stale, or should no longer surface.",
       inputSchema: zodToInputSchema(forgetSchema),
       handler: async (args) => {
         const p = forgetSchema.parse(args);
@@ -195,13 +201,15 @@ export function createMcpTools(store: MemoryStore): McpToolHandler[] {
     },
     {
       name: "list_memories",
-      description: "Browse memories with pagination",
+      description:
+        "Browse memories with pagination and filters. Use for a broad overview, not relevance matching.",
       inputSchema: zodToInputSchema(listMemoriesSchema),
       handler: async (args) => store.list(listMemoriesSchema.parse(args)),
     },
     {
       name: "get_memory",
-      description: "Get a single memory by ID",
+      description:
+        "Get a single memory by ID (with relationships). Use when you have a specific ID and want the full record.",
       inputSchema: zodToInputSchema(getMemorySchema),
       handler: async (args) => {
         const p = getMemorySchema.parse(args);
