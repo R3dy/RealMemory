@@ -77,7 +77,7 @@ describe("fresh-project smoke test", () => {
 
     const results = await store.recall({ query: "smoke lesson", limit: 10 });
     expect(results.length).toBeGreaterThanOrEqual(1);
-    const topIds = results.map((r) => r.memory.id);
+    const topIds = results.map((r: { memory: { id: string } }) => r.memory.id);
     expect(topIds).toContain(a.id);
 
     await store.close();
