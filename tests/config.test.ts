@@ -36,6 +36,7 @@ describe("loadConfig()", () => {
     expect(cfg.autoSummarize).toBe(false);
     expect(cfg.archiveThreshold).toBe(0.05);
     expect(cfg.maxRelatedPerMemory).toBe(3);
+    expect(cfg.autoStartBrowser).toBe(true);
   });
 
   it("global config overrides defaults", () => {
@@ -114,6 +115,17 @@ describe("loadConfig()", () => {
     expect(cfg.projectId).toBe("test-proj-123");
     expect(cfg.storagePath).toBe(join(tempDir, "custom.db"));
   });
+
+  it("project config can disable autoStartBrowser", () => {
+    const projectCfgDir = join(tempDir, ".realmemory");
+    mkdirSync(projectCfgDir, { recursive: true });
+    writeFileSync(
+      join(projectCfgDir, "config.json"),
+      JSON.stringify({ autoStartBrowser: false }),
+    );
+    const cfg = loadConfig(tempDir);
+    expect(cfg.autoStartBrowser).toBe(false);
+  });
 });
 
 describe("validateConfig()", () => {
@@ -154,6 +166,20 @@ describe("validateConfig()", () => {
     expect(() => validateConfig({ maxRecallResults: -1 })).toThrow(
       /maxRecallResults/,
     );
+  });
+
+  it("rejects non-boolean autoStartBrowser", () => {
+    expect(() => validateConfig({ autoStartBrowser: "true" as unknown as boolean })).toThrow(
+      /autoStartBrowser/,
+    );
+    expect(() => validateConfig({ autoStartBrowser: 1 as unknown as boolean })).toThrow(
+      /autoStartBrowser/,
+    );
+  });
+
+  it("accepts boolean autoStartBrowser values", () => {
+    expect(() => validateConfig({ autoStartBrowser: true })).not.toThrow();
+    expect(() => validateConfig({ autoStartBrowser: false })).not.toThrow();
   });
 
   it("accepts a fully valid config without throwing", () => {

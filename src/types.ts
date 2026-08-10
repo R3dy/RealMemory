@@ -207,6 +207,12 @@ export interface MemoryStoreConfig {
   summaryProvider?: SummaryProviderConfig;
   archiveThreshold?: number;
   maxRelatedPerMemory?: number;
+  /**
+   * When true (default), starting the MCP server auto-starts the read-only
+   * graph browser as a side channel at http://127.0.0.1:9333. Set to false
+   * (or pass --no-browser to bin.js) to disable.
+   */
+  autoStartBrowser?: boolean;
 }
 
 /**

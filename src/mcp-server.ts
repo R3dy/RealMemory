@@ -6,8 +6,10 @@ import {
   type Tool,
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
+import type { Server as NodeHttpServer } from "node:http";
 import { MemoryStore } from "./store";
 import { loadConfig } from "./config";
+import { startBrowserServer } from "./browser/server";
 import type { MemoryStoreConfig, RelationshipType } from "./types";
 
 /**
@@ -214,15 +216,31 @@ export function createMcpTools(store: MemoryStore): McpToolHandler[] {
 // ---------------------------------------------------------------------------
 
 const SERVER_NAME = "realmemory";
-const SERVER_VERSION = "0.2.0";
+const SERVER_VERSION = "0.3.0";
 
 /**
  * Start the realmemory MCP server on stdio. Loads config (or accepts an
  * explicit config), initialises a MemoryStore, registers the 8 tool handlers,
  * and connects via the StdioServerTransport. Resolves once connected.
+ *
+ * `ownLifecycle` (default `false`) controls whether THIS function installs
+ * process-level SIGINT/SIGTERM handlers + `process.exit(0)` on shutdown. A
+ * library function must not install process signal handlers or call
+ * `process.exit` — that is the host's job. Only the CLI entry (`bin.ts`, which
+ * owns the process) passes `ownLifecycle: true`. In-process callers (tests,
+ * plugin hosts, programmatic library use) get the default `false` and manage
+ * cleanup themselves. Mirrors the browser server's `ownLifecycle` option.
  */
-export async function startMcpServer(config?: MemoryStoreConfig): Promise<void> {
+export interface StartMcpServerOptions {
+  ownLifecycle?: boolean;
+}
+
+export async function startMcpServer(
+  config?: MemoryStoreConfig,
+  opts?: StartMcpServerOptions,
+): Promise<void> {
   const mergedConfig = config ?? loadConfig();
+  const ownLifecycle = opts?.ownLifecycle ?? false;
 
   const store = new MemoryStore(mergedConfig);
   await store.init();
@@ -269,4 +287,53 @@ export async function startMcpServer(config?: MemoryStoreConfig): Promise<void> 
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
+
+  // New in v0.3.0 (ADR-007): auto-start the read-only graph browser as a
+  // side channel in THIS process, sharing the single MemoryStore instance.
+  // stdio stays reserved for the MCP JSON-RPC transport (the browser logs to
+  // stderr only); HTTP on TCP 127.0.0.1:9333 never touches stdio. Default-on,
+  // defeatable via `autoStartBrowser: false` config or `--no-browser`.
+  // Best-effort: any failure (port collision, missing asset) logs once to
+  // stderr and continues — a UI-side concern must never fail the MCP server.
+  // The port is the existing default (bin.ts parseArgs, ADR-006); a
+  // `browserPort` config knob is a later increment (issue-12 PARKING_LOT).
+  let browserServer: NodeHttpServer | undefined;
+  if (mergedConfig.autoStartBrowser !== false) {
+    try {
+      browserServer = startBrowserServer(store, {
+        port: 9333,
+        ownLifecycle: false, // the MCP server owns the lifecycle and the shared store
+      });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[realmemory] browser side channel failed to start:", err);
+    }
+  }
+
+  // The MCP server is the sole closer of both servers and the store — but
+  // ONLY when this function owns the process lifecycle (bin.ts CLI entry).
+  // Registering a SIGINT/SIGTERM listener removes Node's default termination,
+  // and the StdioServerTransport's stdin reader keeps the event loop alive —
+  // without an explicit exit the process would hang holding the SQLite WAL
+  // handle (ADR-007: "a UI-side concern must never crash the MCP server").
+  // process.exit(0) closes that loophole deterministically. Library/test
+  // callers (ownLifecycle: false) never install process handlers — the host
+  // owns cleanup, and a vitest worker must not be process.exit'd under it.
+  if (ownLifecycle) {
+    const shutdown = async (): Promise<void> => {
+      try {
+        browserServer?.close();
+      } catch {
+        // best-effort
+      }
+      try {
+        await store.close();
+      } catch {
+        // best-effort
+      }
+      process.exit(0);
+    };
+    process.on("SIGINT", () => void shutdown());
+    process.on("SIGTERM", () => void shutdown());
+  }
 }

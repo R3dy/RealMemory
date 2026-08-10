@@ -8,7 +8,7 @@ describe("fresh-project smoke test", () => {
     // Import from the built output, not source — verifies the package
     // exports work against the published artifact.
     const { MemoryStore, VERSION } = await import("../dist/index.js");
-    expect(VERSION).toBe("0.2.0");
+    expect(VERSION).toBe("0.3.0");
 
     const dir = mkdtempSync(join(tmpdir(), "realmemory-smoke-"));
     const store = new MemoryStore({
@@ -33,7 +33,7 @@ describe("fresh-project smoke test", () => {
 
   it("exports the full public API surface from dist", async () => {
     const mod = await import("../dist/index.js");
-    expect(mod.VERSION).toBe("0.2.0");
+    expect(mod.VERSION).toBe("0.3.0");
     expect(typeof mod.MemoryStore).toBe("function");
     expect(typeof mod.RecallEngine).toBe("function");
     expect(typeof mod.loadConfig).toBe("function");
@@ -77,7 +77,7 @@ describe("fresh-project smoke test", () => {
 
     const results = await store.recall({ query: "smoke lesson", limit: 10 });
     expect(results.length).toBeGreaterThanOrEqual(1);
-    const topIds = results.map((r) => r.memory.id);
+    const topIds = results.map((r: { memory: { id: string } }) => r.memory.id);
     expect(topIds).toContain(a.id);
 
     await store.close();

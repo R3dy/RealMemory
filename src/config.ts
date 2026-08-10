@@ -15,6 +15,7 @@ const DEFAULTS: Required<
     | "autoSummarize"
     | "archiveThreshold"
     | "maxRelatedPerMemory"
+    | "autoStartBrowser"
   >
 > = {
   storagePath: "~/.opencode/realmemory/data.db",
@@ -26,6 +27,7 @@ const DEFAULTS: Required<
   autoSummarize: false,
   archiveThreshold: 0.05,
   maxRelatedPerMemory: 3,
+  autoStartBrowser: true,
 };
 
 /**
@@ -90,6 +92,12 @@ export function validateConfig(config: MemoryStoreConfig): void {
   }
   if (config.maxRecallResults !== undefined && config.maxRecallResults < 0) {
     throw new Error("maxRecallResults must be >= 0");
+  }
+  if (
+    config.autoStartBrowser !== undefined &&
+    typeof config.autoStartBrowser !== "boolean"
+  ) {
+    throw new Error("autoStartBrowser must be a boolean");
   }
 }
 
