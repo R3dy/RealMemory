@@ -10,6 +10,7 @@ const DEFAULTS: Required<
     | "embeddingModel"
     | "decayHalfLifeDays"
     | "recallThreshold"
+    | "duplicateSimilarityThreshold"
     | "maxRecallResults"
     | "autoCapture"
     | "autoSummarize"
@@ -22,6 +23,7 @@ const DEFAULTS: Required<
   embeddingModel: "Xenova/all-MiniLM-L6-v2",
   decayHalfLifeDays: 30,
   recallThreshold: 0.3,
+  duplicateSimilarityThreshold: 0.92,
   maxRecallResults: 5,
   autoCapture: true,
   autoSummarize: false,
@@ -83,6 +85,12 @@ export function validateConfig(config: MemoryStoreConfig): void {
     (config.recallThreshold < 0 || config.recallThreshold > 1)
   ) {
     throw new Error("recallThreshold must be in [0, 1]");
+  }
+  if (
+    config.duplicateSimilarityThreshold !== undefined &&
+    (config.duplicateSimilarityThreshold < 0 || config.duplicateSimilarityThreshold > 1)
+  ) {
+    throw new Error("duplicateSimilarityThreshold must be in [0, 1]");
   }
   if (
     config.archiveThreshold !== undefined &&
