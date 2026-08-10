@@ -1146,6 +1146,30 @@ export class MemoryStore {
   }
 
   /**
+   * Read a key from the durable `meta` key-value table. Returns `null` when
+   * the key has never been set. Used for rate-limiting and persisted settings
+   * that must survive process restarts (e.g. `decay:lastRun`).
+   */
+  async getMeta(key: string): Promise<string | null> {
+    const db = this.requireDb();
+    const row = db
+      .prepare("SELECT value FROM meta WHERE key = ?")
+      .get(key) as { value: string } | undefined;
+    return row ? (row.value as string) : null;
+  }
+
+  /**
+   * Write a key to the durable `meta` key-value table, replacing any existing
+   * value for the same key.
+   */
+  async setMeta(key: string, value: string): Promise<void> {
+    const db = this.requireDb();
+    db.prepare(
+      "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+    ).run(key, value);
+  }
+
+  /**
    * Recompute every active memory's composite weight and archive any whose
    * weight has dropped below the configured `archiveThreshold`. Call this on a
    * timer in a long-lived app to keep the store from accumulating stale,
@@ -1191,6 +1215,36 @@ export class MemoryStore {
         updateStmt.run(weight, row.id);
       }
     }
+  }
+
+  /**
+   * Rate-limited decay scheduling. If `intervalHours` have elapsed since the
+   * timestamp stored under `lastRunKey` (in the durable `meta` table), runs
+   * {@link decay} and records the current time back to `lastRunKey`, returning
+   * `true`. Otherwise skips and returns `false`. The timestamp lives in SQLite
+   * so the rate-limit persists across process restarts that reopen the same DB
+   * file — a fresh MemoryStore reads the same row and won't re-trigger decay
+   * within the interval. A missing row is treated as "due", so the first call
+   * always runs decay.
+   */
+  async maybeDecay(lastRunKey: string, intervalHours: number): Promise<boolean> {
+    const now = Date.now();
+    const lastRunRaw = await this.getMeta(lastRunKey);
+    if (lastRunRaw !== null) {
+      const lastRun = new Date(lastRunRaw).getTime();
+      if (
+        !Number.isNaN(lastRun) &&
+        now - lastRun < intervalHours * 60 * 60 * 1000
+      ) {
+        // Still within the interval — skip.
+        return false;
+      }
+    }
+
+    // Interval elapsed (or never run) — decay now and record the timestamp.
+    await this.decay();
+    await this.setMeta(lastRunKey, new Date(now).toISOString());
+    return true;
   }
 
   /**
