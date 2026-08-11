@@ -1338,6 +1338,59 @@ export class MemoryStore {
   }
 
   /**
+   * Automatically create relationship edges from a memory to its semantically
+   * similar peers. Capped at maxRelatedPerMemory per call. Idempotent (catches
+   * DuplicateRelationshipError). Excludes the source memory (INV-007).
+   * Returns the number of edges created.
+   */
+  async maybeRelate(
+    memoryId: string,
+    content: string,
+    type: MemoryType,
+  ): Promise<number> {
+    const maxEdges = this.config.maxRelatedPerMemory ?? 3;
+    let edgesCreated = 0;
+    try {
+      // Recall candidates matching the content, excluding the source memory.
+      const results = await this.recall({
+        query: content,
+        scope: "all",
+        limit: maxEdges + 1, // +1 in case the source is in results (we exclude it)
+        threshold: this.config.recallThreshold ?? 0.3,
+        traverse: false,
+      });
+      for (const result of results) {
+        if (edgesCreated >= maxEdges) break;
+        const candidate = result.memory;
+        // Exclude self (INV-007).
+        if (candidate.id === memoryId) continue;
+        // Exclude archived memories.
+        if (candidate.status === "archived") continue;
+        // Determine edge type.
+        let edgeType: RelationshipType = "extends";
+        if (type === "lesson_learned" && (candidate.type === "user_preference" || candidate.type === "task_pattern")) {
+          edgeType = "derived_from";
+        } else if (type === candidate.type) {
+          edgeType = "reinforces";
+        }
+        try {
+          await this.relate(memoryId, candidate.id, edgeType);
+          edgesCreated++;
+        } catch (error) {
+          // DuplicateRelationshipError (INV-008 idempotent) or MemoryNotFoundError — skip.
+          if (error instanceof DuplicateRelationshipError || error instanceof MemoryNotFoundError) {
+            continue;
+          }
+          throw error;
+        }
+      }
+    } catch {
+      // maybeRelate must never break the caller (INV-017).
+    }
+    return edgesCreated;
+  }
+
+  /**
    * Patch an existing active memory. Content is scrubbed; tags are replaced
    * (not merged); metadata is merged with existing. `reinforce: true` bumps
    * `reinforcementCount` and boosts confidence (diminishing returns). Any

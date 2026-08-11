@@ -180,8 +180,14 @@ export async function evaluateDelta(
     metadata: { intent, source: "evaluateDelta" } as Record<string, unknown>,
   });
 
-  // Step 6: maybeRelate (A22.4 stub — no-op for now; autoRelate config gated in A22.4).
-  // A22.4 will wire: if (state.config.autoRelate) await store.maybeRelate(stored.id, content, type);
+  // Step 6: auto-relate (A22.4).
+  if (state.config.autoRelate !== false) {
+    try {
+      await store.maybeRelate(stored.id, content, type);
+    } catch {
+      // maybeRelate must never break evaluateDelta (INV-017).
+    }
+  }
 
   // Step 7: metrics.
   // duplicate_rate: detect if store() reinforced an existing memory.

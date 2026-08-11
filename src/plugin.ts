@@ -439,7 +439,7 @@ export default async function realmemoryPlugin(
           if (input.tool === "read") {
             const filePath = (args as { filePath?: string })?.filePath || "";
             if (isConfigOrSchemaFile(filePath)) {
-              await store.store({
+              const stored = await store.store({
                 content: `Read ${filePath}`,
                 type: "codebase_fact",
                 scope: "project",
@@ -447,6 +447,9 @@ export default async function realmemoryPlugin(
                 tags: ["auto-captured", "file-read"],
                 metadata: { source: "tool.execute.after", tool: "read", filePath },
               });
+              if ((state.config as { autoRelate?: boolean }).autoRelate !== false) {
+                void store.maybeRelate(stored.id, stored.content, stored.type).catch(() => {});
+              }
               await log("debug", `Auto-captured codebase_fact for ${filePath}`);
               // Brain-loop capture: remember the tool outcome this turn so
               // classifyIntent can see it on the next user message.
@@ -464,7 +467,7 @@ export default async function realmemoryPlugin(
             const command = (args as { command?: string })?.command || "";
             const result = String(output?.output ?? "");
             if (isErrorResult(result)) {
-              await store.store({
+              const stored = await store.store({
                 content: `Command failed: ${command.slice(0, 200)} → ${result.slice(0, 200)}`,
                 type: "lesson_learned",
                 scope: "project",
@@ -477,6 +480,9 @@ export default async function realmemoryPlugin(
                   severity: "medium",
                 },
               });
+              if ((state.config as { autoRelate?: boolean }).autoRelate !== false) {
+                void store.maybeRelate(stored.id, stored.content, stored.type).catch(() => {});
+              }
               await log("debug", "Auto-captured lesson_learned from bash error");
               // Brain-loop capture: remember the tool outcome this turn so
               // classifyIntent can see it on the next user message.
