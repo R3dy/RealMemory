@@ -1,6 +1,8 @@
 import { MemoryStore } from "./store";
 import { loadConfig } from "./config";
 import { deriveProjectId } from "./project-id";
+import { classifyIntent, dynamicLimit, evaluateDelta } from "./brain-loop";
+import type { Intent, ToolCapture } from "./brain-loop";
 import {
   buildSummarizationPrompt,
   callSummaryProvider,
@@ -34,6 +36,12 @@ interface PluginState {
   initialized: boolean;
   /** Shared in-flight init promise so concurrent detached hooks init once. */
   initPromise: Promise<MemoryStore> | null;
+  lastUserText: string | null;
+  lastUserIntent: Intent | null;
+  recentUserTexts: string[];
+  lastToolCapture: ToolCapture | null;
+  lastInjectedMemoryIds: string[] | null;
+  deltaTurnDone: boolean;
 }
 
 /** Check if a file path looks like a config, schema, or route file worth capturing. */
@@ -208,6 +216,12 @@ export default async function realmemoryPlugin(
     pendingInjection: null,
     initialized: false,
     initPromise: null,
+    lastUserText: null,
+    lastUserIntent: null,
+    recentUserTexts: [],
+    lastToolCapture: null,
+    lastInjectedMemoryIds: null,
+    deltaTurnDone: false,
   };
 
   /**
@@ -302,6 +316,32 @@ export default async function realmemoryPlugin(
       }
 
       if (event.type === "session.idle") {
+        // C1 fix (PRIMARY trigger): per-turn delta evaluation on session.idle.
+        // Runs BEFORE the LLM summarization. Detached (INV-017).
+        if ((state.config as { brainLoop?: boolean }).brainLoop !== false) {
+          // C1 fix: double-fire guard.
+          if (state.deltaTurnDone) {
+            state.deltaTurnDone = false;
+          } else {
+            void (async () => {
+              const store = await getStore();
+              await evaluateDelta(
+                store,
+                state as unknown as import("./brain-loop").BrainLoopState,
+                state.lastUserText ?? "",
+                "",
+              );
+              // C2 fix: clear lastToolCapture AFTER evaluateDelta completes.
+              state.lastToolCapture = null;
+            })().catch((error) =>
+              log(
+                "error",
+                `evaluateDelta failed: ${error instanceof Error ? error.message : String(error)}`,
+              ),
+            );
+          }
+        }
+
         try {
           // Ensure config is loaded (getStore initializes state.config) before
           // deciding whether auto-summarization applies.
@@ -408,6 +448,14 @@ export default async function realmemoryPlugin(
                 metadata: { source: "tool.execute.after", tool: "read", filePath },
               });
               await log("debug", `Auto-captured codebase_fact for ${filePath}`);
+              // Brain-loop capture: remember the tool outcome this turn so
+              // classifyIntent can see it on the next user message.
+              state.lastToolCapture = {
+                tool: input.tool,
+                filePath,
+                isError: isErrorResult(String(output?.output ?? "")),
+                timestamp: Date.now(),
+              };
             }
           }
 
@@ -430,6 +478,14 @@ export default async function realmemoryPlugin(
                 },
               });
               await log("debug", "Auto-captured lesson_learned from bash error");
+              // Brain-loop capture: remember the tool outcome this turn so
+              // classifyIntent can see it on the next user message.
+              state.lastToolCapture = {
+                tool: input.tool,
+                command,
+                isError: isErrorResult(result),
+                timestamp: Date.now(),
+              };
             }
           }
           // Write/Edit -> no capture (too noisy).
@@ -457,6 +513,25 @@ export default async function realmemoryPlugin(
       const content = extractUserText(output?.parts ?? []);
       if (!content) return;
 
+      // Reset per-turn injection state (new user message starts a new turn).
+      // C2 fix: do NOT clear lastToolCapture here — it survives from the prior
+      // turn's tool.execute.after through classifyIntent and evaluateDelta.
+      state.lastInjectedMemoryIds = null;
+      state.deltaTurnDone = false;
+
+      // C4 fix: gate classification on brainLoop. When disabled, use fixed limit:3 (v0.3.0 behavior).
+      const brainLoopEnabled = (state.config as { brainLoop?: boolean }).brainLoop !== false;
+      let recallLimit = 3;
+      if (brainLoopEnabled) {
+        const intent = classifyIntent(content, "", state.recentUserTexts, state.lastToolCapture);
+        state.lastUserText = content;
+        state.lastUserIntent = intent;
+        recallLimit = dynamicLimit(intent);
+        // C4 fix: classify FIRST (check if in buffer), THEN push.
+        state.recentUserTexts.push(content);
+        if (state.recentUserTexts.length > 5) state.recentUserTexts.shift();
+      }
+
       void (async () => {
         try {
           const store = await getStore();
@@ -467,7 +542,7 @@ export default async function realmemoryPlugin(
           const results = await store.recall({
             query: content,
             scope: "all",
-            limit: 3,
+            limit: recallLimit,
             threshold: config.recallThreshold || 0.3,
             traverse: true,
           });
@@ -479,6 +554,8 @@ export default async function realmemoryPlugin(
           if (newResults.length === 0) return;
 
           newResults.forEach((r) => state.injectedMemoryIds.add(r.memory.id));
+          // C2 fix: track which IDs were delivered THIS TURN for the hit-rate metric.
+          state.lastInjectedMemoryIds = newResults.map((r) => r.memory.id).slice(-5);
           state.pendingInjection = formatRecallResults(newResults);
           await log("info", `Auto-recalled ${newResults.length} memories for user message`);
         } catch (error) {
@@ -506,6 +583,8 @@ export default async function realmemoryPlugin(
         return;
       }
       output.system.push(state.pendingInjection);
+      // C2 fix: stash the IDs delivered THIS TURN before clearing pendingInjection.
+      state.lastInjectedMemoryIds = Array.from(state.injectedMemoryIds).slice(-5);
       state.pendingInjection = null;
     },
   };
