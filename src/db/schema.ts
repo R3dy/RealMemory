@@ -120,7 +120,27 @@ CREATE INDEX IF NOT EXISTS idx_memories_domain ON memories(domain);
 CREATE INDEX IF NOT EXISTS idx_memories_category ON memories(category);
 `;
 
-export const CURRENT_SCHEMA_VERSION = 3;
+/**
+ * Schema version 4 — adds the `metrics` table for brain-loop observability.
+ *
+ * The metrics table records observable signals from the self-improving memory
+ * loop (recall_hit_rate, correction_retention, duplicate_rate,
+ * memory_bloat_ratio, preference_compliance). Each row is a single metric
+ * observation with a name, numeric value, optional session id, and timestamp.
+ */
+export const SCHEMA_V4 = `
+CREATE TABLE IF NOT EXISTS metrics (
+  id TEXT PRIMARY KEY,
+  metric_name TEXT NOT NULL,
+  metric_value REAL NOT NULL,
+  session_id TEXT,
+  recorded_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_metrics_name ON metrics(metric_name);
+CREATE INDEX IF NOT EXISTS idx_metrics_recorded ON metrics(recorded_at);
+`;
+
+export const CURRENT_SCHEMA_VERSION = 4;
 
 /**
  * Migrations map: version -> SQL to apply.
@@ -130,6 +150,7 @@ const MIGRATIONS: Record<number, string> = {
   1: SCHEMA_V1,
   2: SCHEMA_V2,
   3: SCHEMA_V3,
+  4: SCHEMA_V4,
 };
 
 /**

@@ -41,10 +41,10 @@ afterEach(() => {
 });
 
 describe("createMcpTools — definitions", () => {
-  it("returns exactly 8 tools", async () => {
+  it("returns exactly 9 tools", async () => {
     const store = await freshStore();
     const tools = createMcpTools(store);
-    expect(tools).toHaveLength(8);
+    expect(tools).toHaveLength(9);
     await store.close();
   });
 
@@ -76,9 +76,10 @@ describe("createMcpTools — definitions", () => {
         "forget",
         "list_memories",
         "get_memory",
+        "get_metrics",
       ]),
     );
-    expect(names).toHaveLength(8);
+    expect(names).toHaveLength(9);
     await store.close();
   });
 });

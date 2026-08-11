@@ -19,6 +19,10 @@ const DEFAULTS: Required<
     | "archiveThreshold"
     | "maxRelatedPerMemory"
     | "autoStartBrowser"
+    | "concisenessCap"
+    | "autoRelate"
+    | "brainLoop"
+    | "compactingIntervalHours"
   >
 > = {
   storagePath: "~/.opencode/realmemory/data.db",
@@ -34,6 +38,10 @@ const DEFAULTS: Required<
   archiveThreshold: 0.05,
   maxRelatedPerMemory: 3,
   autoStartBrowser: true,
+  concisenessCap: 280,
+  autoRelate: true,
+  brainLoop: true,
+  compactingIntervalHours: 4,
 };
 
 /**
@@ -123,6 +131,30 @@ export function validateConfig(config: MemoryStoreConfig): void {
     typeof config.autoStartBrowser !== "boolean"
   ) {
     throw new Error("autoStartBrowser must be a boolean");
+  }
+  if (
+    config.concisenessCap !== undefined &&
+    (config.concisenessCap <= 0 || !Number.isFinite(config.concisenessCap))
+  ) {
+    throw new Error("concisenessCap must be > 0");
+  }
+  if (
+    config.compactingIntervalHours !== undefined &&
+    (config.compactingIntervalHours <= 0 || Number.isNaN(config.compactingIntervalHours))
+  ) {
+    throw new Error("compactingIntervalHours must be > 0");
+  }
+  if (
+    config.autoRelate !== undefined &&
+    typeof config.autoRelate !== "boolean"
+  ) {
+    throw new Error("autoRelate must be a boolean");
+  }
+  if (
+    config.brainLoop !== undefined &&
+    typeof config.brainLoop !== "boolean"
+  ) {
+    throw new Error("brainLoop must be a boolean");
   }
 }
 
