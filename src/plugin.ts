@@ -593,5 +593,32 @@ export default async function realmemoryPlugin(
       state.lastInjectedMemoryIds = Array.from(state.injectedMemoryIds).slice(-5);
       state.pendingInjection = null;
     },
+
+    // On context compaction: run detached hygiene (INV-017) — rate-limited
+    // decay under a separate meta key (decay:compacting), a bounded dedup
+    // pass, and a bloat-ratio snapshot. The hook resolves immediately; all
+    // store work runs on a detached promise and any failure is logged, never
+    // thrown out of the handler or the compaction flow.
+    "experimental.session.compacting": () => {
+      // Detached hygiene (INV-017). Runs on context compaction.
+      void (async () => {
+        try {
+          const store = await getStore();
+          const config = state.config as { compactingIntervalHours?: number };
+          const intervalHours = config.compactingIntervalHours ?? 4;
+          // Rate-limited decay check (separate from session.created's decay:lastRun).
+          await store.maybeDecay("decay:compacting", intervalHours);
+          // Always run dedupPass (it's bounded and idempotent).
+          await store.dedupPass();
+          // If maybeDecay didn't run (rate-limited), still record bloat ratio.
+          await store.recordMetric("memory_bloat_ratio", await store.getBloatRatio());
+        } catch (error) {
+          await log(
+            "error",
+            `Compacting hygiene failed: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      })();
+    },
   };
 }

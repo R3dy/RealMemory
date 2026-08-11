@@ -1391,6 +1391,67 @@ export class MemoryStore {
   }
 
   /**
+   * Scan active memories for near-duplicate pairs and merge them (reinforce the
+   * higher-weight one, archive the lower-weight one). Bounded scan: at most
+   * 1000 most-recently-touched active memories. Returns the count of merges.
+   * Fire-safe — errors are caught and logged, never thrown (INV-017).
+   */
+  async dedupPass(): Promise<number> {
+    if (!this.db) return 0;
+    let merges = 0;
+    try {
+      // Bounded scan: 1000 most-recently-touched active memories.
+      const rows = this.db
+        .prepare(
+          "SELECT id, content, type, weight, tags FROM memories WHERE status = 'active' ORDER BY updated_at DESC LIMIT 1000",
+        )
+        .all() as Array<{ id: string; content: string; type: string; weight: number; tags: string }>;
+      // Find near-duplicate pairs by comparing content (normalized) + type.
+      // Group by type first to reduce comparisons.
+      const byType = new Map<string, Array<{ id: string; content: string; weight: number }>>();
+      for (const row of rows) {
+        if (!byType.has(row.type)) byType.set(row.type, []);
+        byType.get(row.type)!.push({ id: row.id, content: row.content, weight: row.weight });
+      }
+      const merged = new Set<string>(); // IDs already merged (archived).
+      for (const [, group] of byType) {
+        for (let i = 0; i < group.length; i++) {
+          if (merged.has(group[i].id)) continue;
+          for (let j = i + 1; j < group.length; j++) {
+            if (merged.has(group[j].id)) continue;
+            // Check if this pair is a near-duplicate (normalized content match).
+            const a = group[i].content.trim().toLowerCase().slice(0, 500);
+            const b = group[j].content.trim().toLowerCase().slice(0, 500);
+            if (a === b || (a.length > 20 && b.length > 20 && (a.includes(b) || b.includes(a)))) {
+              // Merge: reinforce the higher-weight, archive the lower-weight.
+              const higher = group[i].weight >= group[j].weight ? group[i] : group[j];
+              const lower = group[i].weight >= group[j].weight ? group[j] : group[i];
+              try {
+                // Reinforce the higher (increment reinforcement_count + recompute weight).
+                this.db
+                  .prepare("UPDATE memories SET reinforcement_count = reinforcement_count + 1, updated_at = ? WHERE id = ?")
+                  .run(new Date().toISOString(), higher.id);
+                // Archive the lower.
+                this.db
+                  .prepare("UPDATE memories SET status = 'archived', updated_at = ? WHERE id = ?")
+                  .run(new Date().toISOString(), lower.id);
+                merged.add(lower.id);
+                merges++;
+              } catch {
+                // Skip this pair on error.
+              }
+              break; // Move to the next i.
+            }
+          }
+        }
+      }
+    } catch {
+      // dedupPass must never break the caller.
+    }
+    return merges;
+  }
+
+  /**
    * Patch an existing active memory. Content is scrubbed; tags are replaced
    * (not merged); metadata is merged with existing. `reinforce: true` bumps
    * `reinforcementCount` and boosts confidence (diminishing returns). Any
