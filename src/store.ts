@@ -325,7 +325,13 @@ export class MemoryStore {
 
     // 3. Scope + scrubbed content, shared by the dedup check and the insert.
     const scope: MemoryScope = input.scope ?? "project";
-    const content = scrubSecrets(input.content);
+    let content = scrubSecrets(input.content);
+
+    // Conciseness cap (auto-stored memories only — explicit MCP calls are not capped).
+    const concisenessCap = this.config.concisenessCap ?? 280;
+    if (input.concise && content.length > concisenessCap) {
+      content = content.slice(0, concisenessCap) + "...";
+    }
 
     // 4. Near-duplicate check: when an active memory in the same scope and
     //    type already holds identical/near-identical content, reinforce the
@@ -1576,6 +1582,110 @@ export class MemoryStore {
     await this.decay();
     await this.setMeta(lastRunKey, new Date(now).toISOString());
     return true;
+  }
+
+  /**
+   * Record a metric observation (brain-loop observability).
+   * Stores a single row in the metrics table with a ULID and ISO timestamp.
+   * Fire-safe: errors are caught and logged to the store's error log, never
+   * thrown (metrics must not break the caller — INV-017).
+   */
+  async recordMetric(
+    name: string,
+    value: number,
+    sessionId?: string,
+  ): Promise<void> {
+    if (!this.db) return;
+    try {
+      const id = generateUlid();
+      const recordedAt = new Date().toISOString();
+      this.db
+        .prepare(
+          "INSERT INTO metrics (id, metric_name, metric_value, session_id, recorded_at) VALUES (?, ?, ?, ?, ?)",
+        )
+        .run(id, name, value, sessionId ?? null, recordedAt);
+    } catch {
+      // Metrics must never break the caller.
+    }
+  }
+
+  /**
+   * Aggregate summary of recorded metrics. Returns per-metric_name aggregates:
+   * count, sum, avg, latest, latest_at. Optionally filtered by name and/or
+   * since (ISO timestamp).
+   */
+  async getMetricSummary(
+    name?: string,
+    since?: string,
+  ): Promise<
+    Array<{
+      metric_name: string;
+      count: number;
+      sum: number;
+      avg: number;
+      latest: number;
+      latest_at: string;
+    }>
+  > {
+    if (!this.db) return [];
+    let sql =
+      "SELECT metric_name, COUNT(*) as count, SUM(metric_value) as sum, AVG(metric_value) as avg, MAX(metric_value) as latest FROM metrics";
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+    if (name) {
+      conditions.push("metric_name = ?");
+      params.push(name);
+    }
+    if (since) {
+      conditions.push("recorded_at >= ?");
+      params.push(since);
+    }
+    if (conditions.length > 0) {
+      sql += " WHERE " + conditions.join(" AND ");
+    }
+    sql += " GROUP BY metric_name";
+    const rows = this.db.prepare(sql).all(...params) as Array<{
+      metric_name: string;
+      count: number;
+      sum: number;
+      avg: number;
+      latest: number;
+    }>;
+    // Get latest_at per metric_name (the recorded_at of the latest row).
+    return rows.map((row) => {
+      const latestRow = this.db!
+        .prepare(
+          "SELECT recorded_at FROM metrics WHERE metric_name = ? ORDER BY recorded_at DESC LIMIT 1",
+        )
+        .get(row.metric_name) as { recorded_at: string } | undefined;
+      return {
+        metric_name: row.metric_name,
+        count: row.count,
+        sum: row.sum,
+        avg: row.avg,
+        latest: row.latest,
+        latest_at: latestRow?.recorded_at ?? "",
+      };
+    });
+  }
+
+  /**
+   * Bloat ratio: fraction of active memories with weight below
+   * archiveThreshold. 0.0 on an empty store.
+   */
+  async getBloatRatio(): Promise<number> {
+    if (!this.db) return 0;
+    const threshold = this.config.archiveThreshold ?? 0.05;
+    const total = this.db
+      .prepare("SELECT COUNT(*) as c FROM memories WHERE status = 'active'")
+      .get() as { c: number };
+    if (total.c === 0) return 0;
+    const bloat = this.db
+      .prepare(
+        "SELECT COUNT(*) as c FROM memories WHERE status = 'active' AND weight < ?",
+      )
+      .get(threshold) as { c: number };
+    return bloat.c / total.c;
   }
 
   /**

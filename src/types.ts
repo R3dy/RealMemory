@@ -171,6 +171,13 @@ export interface StoreInput {
   confidence?: number;
   relationships?: RelationshipInput[];
   metadata?: MemoryMetadata;
+  /**
+   * When true, content exceeding `concisenessCap` (default 280 chars) is
+   * truncated. Set by auto-capture paths (tool.execute.after, evaluateDelta,
+   * session.idle summarization). Explicit MCP store_memory does NOT set this —
+   * user content is preserved in full. Defaults to false (no truncation).
+   */
+  concise?: boolean;
 }
 
 /**
@@ -348,6 +355,30 @@ export interface MemoryStoreConfig {
    * (or pass --no-browser to bin.js) to disable.
    */
   autoStartBrowser?: boolean;
+  /**
+   * Maximum content length (chars) for auto-stored memories (auto-capture,
+   * evaluateDelta, auto-summarize). Content exceeding this is truncated.
+   * Explicit MCP store_memory calls are NOT capped. Defaults to 280.
+   */
+  concisenessCap?: number;
+  /**
+   * When true (default), the brain loop automatically creates relationship
+   * edges when a new memory is stored or reinforced. Capped at
+   * maxRelatedPerMemory per store. Set to false to disable auto-relate.
+   */
+  autoRelate?: boolean;
+  /**
+   * Master switch for the per-turn brain loop (evaluateDelta on session.idle).
+   * When false, no delta memories are stored and no delta metrics are recorded.
+   * Defaults to true. The existing recall/decay/summarize hooks are NOT
+   * affected by this switch (only the delta-evaluation path).
+   */
+  brainLoop?: boolean;
+  /**
+   * How often (in hours) the experimental.session.compacting hygiene hook
+   * runs a full dedup + decay pass. Defaults to 4.
+   */
+  compactingIntervalHours?: number;
 }
 
 /**
