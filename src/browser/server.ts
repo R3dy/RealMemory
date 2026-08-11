@@ -190,6 +190,14 @@ async function handleRequest(
     return;
   }
 
+  if (pathname === "/api/metrics") {
+    const name = url.searchParams.get("name") ?? undefined;
+    const since = url.searchParams.get("since") ?? undefined;
+    const summary = await store.getMetricSummary(name, since);
+    sendJson(res, 200, summary);
+    return;
+  }
+
   const memoryMatch = pathname.match(/^\/api\/memory\/(.+)$/);
   if (memoryMatch) {
     await handleMemory(memoryMatch[1], res, store);

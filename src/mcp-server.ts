@@ -149,6 +149,17 @@ const getMemorySchema = z.object({
   includeRelationships: z.boolean().optional().default(true),
 });
 
+const getMetricsSchema = z.object({
+  name: z
+    .string()
+    .optional()
+    .describe("Filter by metric name (e.g. 'recall_hit'). If omitted, returns all metrics."),
+  since: z
+    .string()
+    .optional()
+    .describe("Only include metrics recorded at or after this ISO timestamp."),
+});
+
 // ---------------------------------------------------------------------------
 // Tool descriptor
 // ---------------------------------------------------------------------------
@@ -163,7 +174,7 @@ export interface McpToolHandler {
 }
 
 /**
- * Build the array of 8 MCP tool descriptors backed by the given MemoryStore.
+ * Build the array of 9 MCP tool descriptors backed by the given MemoryStore.
  * Each descriptor carries a JSON Schema `inputSchema` and a `handler` that
  * routes the parsed args to the corresponding MemoryStore method.
  */
@@ -237,6 +248,16 @@ export function createMcpTools(store: MemoryStore): McpToolHandler[] {
         return store.get(p.id, p.includeRelationships);
       },
     },
+    {
+      name: "get_metrics",
+      description:
+        "Query brain-loop metrics (recall_hit_rate, correction_retention, duplicate_rate, memory_bloat_ratio, preference_compliance). Returns per-metric aggregates: count, sum, avg, latest, latest_at.",
+      inputSchema: zodToInputSchema(getMetricsSchema),
+      handler: async (args) => {
+        const p = getMetricsSchema.parse(args);
+        return store.getMetricSummary(p.name, p.since);
+      },
+    },
   ];
 }
 
@@ -245,11 +266,11 @@ export function createMcpTools(store: MemoryStore): McpToolHandler[] {
 // ---------------------------------------------------------------------------
 
 const SERVER_NAME = "realmemory";
-const SERVER_VERSION = "0.3.0";
+const SERVER_VERSION = "0.4.0";
 
 /**
  * Start the realmemory MCP server on stdio. Loads config (or accepts an
- * explicit config), initialises a MemoryStore, registers the 8 tool handlers,
+ * explicit config), initialises a MemoryStore, registers the 9 tool handlers,
  * and connects via the StdioServerTransport. Resolves once connected.
  *
  * `ownLifecycle` (default `false`) controls whether THIS function installs
