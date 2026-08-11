@@ -6,4 +6,5 @@ One line per issue; status advances with the label on GitHub.
 | # | Title | Type | Status | Updated |
 |---|-------|------|--------|---------|
 | 20 | Redesign web UI to mobile-first UX philosophy | feature | CLOSED (PR #21, merge `21303fc`, tag `issue-20`) | 2026-08-11 |
-| 22 | Make realmemory act like a human brain | feature | planning (intake confirmed; Cartographer → Architect → Reviewer) | 2026-08-11 |
+| 22 | Make realmemory act like a human brain | feature | CLOSED (PR #26, merge `bd224e6`, tag `issue-22`) | 2026-08-11 |
+| 24 | Add Created and Updated columns to the web UI list view | feature | CLOSED (PR #25, merge `b1e11fd`, tag `issue-24`) | 2026-08-11 |
