@@ -12,12 +12,54 @@ requires: realmemory installed (provides the 8 MCP tools: store_memory, recall, 
 
 This skill is the cognitive half. It pairs with a **discovery script** (`scripts/discover-history.mjs`) that does the mechanical half: SQL + filesystem scan → a compact `history-catalog.json`. The script is dumb and fast; you (the agent) are smart and slow. **Never collapse them** — extracting transcripts in-agent burns context on exploration and you exit before doing the cognitive work (this is a documented failure mode). Run the script, read the compact catalog, then do the memory work via the realmemory MCP tools.
 
-## The contract: two halves
+## The two tools
 
-| Half | Owner | What |
+| Tool | What | When |
 |------|-------|------|
-| Mechanical extraction | `scripts/discover-history.mjs` | Query opencode.db (sessions/messages/parts/todos), scan the filesystem (MEMORY.md, PHASE_STATE.md, ADRs, agent defs, skills), emit a compact catalog JSON. Supports `--session <id>` to dump one session's full transcript on demand. |
-| Cognitive pass | You (this skill) | Read the catalog, recall existing memory, extract candidate memories, classify + weight, dedup (store/update/relate/forget), report. |
+| `scripts/bootstrap-memory.mjs` | **The primary tool.** A standalone Node script that autonomously processes ALL (or top-N) opencode sessions through an LLM to extract memories, deduplicates against the existing DB, and stores with embeddings. No agent in the loop. Scales to thousands of sessions. | First run on a new machine. Periodic re-ingestion. Any time you have 100+ sessions to process. |
+| `scripts/discover-history.mjs` + agent | The manual fallback. The discovery script emits a catalog JSON; an agent follows the 7-phase cognitive pass below. Useful for targeted extraction (specific sessions, filesystem artifacts like ADRs/agent-defs that the automated script doesn't cover). | When the automated script doesn't cover a source. When you want agent-curated quality over volume. |
+
+**Use the automated script first.** It processes sessions in parallel batches with configurable concurrency, handles LLM rate limits, deduplicates against existing memories via FTS5 keyword overlap, and stores directly to the realmemory SQLite DB. The agent-assisted flow is for the gaps the script can't fill (filesystem artifacts, cross-session pattern synthesis, relationship building).
+
+## Automated bootstrap (the primary path)
+
+```bash
+# Auto-detect everything (LLM provider from opencode auth, DBs from default paths)
+node scripts/bootstrap-memory.mjs
+
+# Process only the top 50 sessions by cost
+node scripts/bootstrap-memory.mjs --limit 50
+
+# Process sessions >= $1, 5 in parallel
+node scripts/bootstrap-memory.mjs --min-cost 1 --concurrency 5
+
+# Dry run (extract + report, don't store)
+node scripts/bootstrap-memory.mjs --dry-run
+
+# Resume (skip already-processed sessions)
+node scripts/bootstrap-memory.mjs --resume
+
+# Override LLM provider
+node scripts/bootstrap-memory.mjs --api-key sk-... --model gpt-4o-mini
+node scripts/bootstrap-memory.mjs --model openrouter/auto  # uses openrouter key from auth.json
+node scripts/bootstrap-memory.mjs --api-url http://localhost:8085/v1 --model local-model  # local LLM
+```
+
+**LLM provider auto-detection** (in order): CLI flags → realmemory.json config → opencode auth.json (openrouter → openai) → opencode.json local provider (llamacpp etc.)
+
+**What the script does per session:**
+1. Extracts the full transcript from opencode.db (truncated to 25k chars for LLM context)
+2. Calls the LLM with an enhanced extraction prompt (asks for 5-15 memories with domain/category/weight/tags)
+3. Defensively parses the JSON response
+4. For each extracted memory: FTS5 keyword-search dedup against existing memories (skips if >60% word overlap)
+5. Stores novel memories directly to the realmemory SQLite DB (with embeddings if @huggingface/transformers is available)
+6. Tracks processed sessions for `--resume`
+
+After the automated run, the agent can do a **refinement pass** (the 7 phases below) to:
+- Mine filesystem artifacts the script doesn't cover (MEMORY.md, ADRs, agent definitions)
+- Build relationships between memories (the script stores but doesn't relate)
+- Classify domains more precisely
+- Forget probe/stale memories
 
 ## The 7 phases
 
