@@ -57,6 +57,14 @@ const storeMemorySchema = z.object({
   type: memoryTypeSchema,
   tags: z.array(z.string()).optional().default([]),
   scope: z.enum(["project", "global"]).optional().default("project"),
+  domain: z.string().optional().describe("Primary technology/topic domain (e.g. 'aws', 'testing', 'opencode')"),
+  category: z.string().optional().describe("Sub-classification within type (e.g. 'gotcha', 'cost', 'safety', 'process', 'tooling')"),
+  source: z.object({
+    project: z.string().optional(),
+    session: z.string().optional(),
+    ref: z.string().optional(),
+    refType: z.enum(["issue", "pr", "adr", "file", "commit", "url"]).optional(),
+  }).optional().describe("Origin tracking — where this memory came from"),
   confidence: z.number().min(0).max(1).optional().default(0.5),
   relationships: z
     .array(
@@ -77,6 +85,7 @@ const recallSchema = z.object({
   threshold: z.number().min(0).max(1).optional().default(0.3),
   types: z.array(memoryTypeSchema).optional(),
   tags: z.array(z.string()).optional(),
+  domain: z.string().optional().describe("Filter by domain (e.g. 'aws', 'testing')"),
   traverse: z.boolean().optional().default(true),
 });
 
@@ -84,6 +93,8 @@ const searchSchema = z.object({
   scope: z.enum(["project", "global", "all"]).optional().default("all"),
   types: z.array(memoryTypeSchema).optional(),
   tags: z.array(z.string()).optional(),
+  domain: z.string().optional().describe("Filter by domain"),
+  category: z.string().optional().describe("Filter by category"),
   minWeight: z.number().optional(),
   createdAfter: z.string().optional(),
   createdBefore: z.string().optional(),
@@ -104,6 +115,14 @@ const updateMemorySchema = z.object({
   content: z.string().optional(),
   confidence: z.number().min(0).max(1).optional(),
   tags: z.array(z.string()).optional(),
+  domain: z.string().optional().describe("Update the domain classification"),
+  category: z.string().optional().describe("Update the category"),
+  source: z.object({
+    project: z.string().optional(),
+    session: z.string().optional(),
+    ref: z.string().optional(),
+    refType: z.enum(["issue", "pr", "adr", "file", "commit", "url"]).optional(),
+  }).optional().describe("Update the source"),
   metadata: z.record(z.string(), z.unknown()).optional(),
   reinforce: z.boolean().optional().default(false),
 });
@@ -118,6 +137,8 @@ const listMemoriesSchema = z.object({
   scope: z.enum(["project", "global", "all"]).optional().default("all"),
   type: memoryTypeSchema.optional(),
   tag: z.string().optional(),
+  domain: z.string().optional().describe("Filter by domain"),
+  category: z.string().optional().describe("Filter by category"),
   minWeight: z.number().optional(),
   limit: z.number().optional().default(50),
   offset: z.number().optional().default(0),
