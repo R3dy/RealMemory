@@ -71,12 +71,12 @@ export const INDEX_HTML = `<!doctype html>
     color: var(--text-dim); font-size: 14px;
   }
   header .stats {
-    display: flex; gap: 12px; font-size: 12px; color: var(--text-dim);
+    display: none; gap: 12px; font-size: 12px; color: var(--text-dim);
   }
   header .stats .stat { display: flex; align-items: center; gap: 4px; }
   header .stats .stat .num { color: var(--text-bright); font-weight: 600; }
   header .view-toggle {
-    display: flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden;
+    display: none; border: 1px solid var(--border); border-radius: 6px; overflow: hidden;
   }
   header .view-toggle button {
     padding: 5px 12px; background: var(--bg); border: none; color: var(--text-dim);
@@ -85,12 +85,11 @@ export const INDEX_HTML = `<!doctype html>
   header .view-toggle button.active { background: var(--accent-dim); color: #fff; }
   header .view-toggle button:hover:not(.active) { background: var(--bg-elev2); }
 
-  /* ===== Main Layout ===== */
+  /* ===== Main Layout (mobile-first: base = mobile flex column) ===== */
   #app {
-    display: grid;
-    grid-template-columns: 280px 1fr 360px;
-    grid-template-rows: 1fr;
-    height: calc(100vh - 48px - 28px);
+    display: flex;
+    flex-direction: column;
+    height: calc(100vh - 48px);
   }
 
   /* ===== Left Sidebar (Domains + Filters) ===== */
@@ -159,6 +158,7 @@ export const INDEX_HTML = `<!doctype html>
   /* ===== Center Pane (Graph / List) ===== */
   main#center {
     position: relative; background: var(--bg); overflow: hidden; min-height: 0;
+    flex: 1;
   }
   #network { width: 100%; height: 100%; }
   #list-view {
@@ -288,7 +288,7 @@ export const INDEX_HTML = `<!doctype html>
 
   /* ===== Footer ===== */
   footer {
-    height: 28px; display: flex; align-items: center; gap: 12px;
+    height: 28px; display: none; align-items: center; gap: 12px;
     padding: 0 16px; border-top: 1px solid var(--border);
     background: var(--bg-elev); font-size: 10px; overflow-x: auto;
   }
@@ -310,10 +310,114 @@ export const INDEX_HTML = `<!doctype html>
     animation: spin 1s linear infinite; margin: 20px auto;
   }
   @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ===== Mobile Components (base = mobile, enhance up via min-width queries) ===== */
+
+  /* Hamburger button — shown on mobile/tablet, hidden on desktop */
+  .hamburger {
+    display: flex; align-items: center; justify-content: center;
+    width: 36px; height: 36px; background: none; border: none;
+    color: var(--text); font-size: 20px; cursor: pointer;
+    border-radius: 6px; transition: background .15s;
+  }
+  .hamburger:hover { background: var(--bg-elev2); }
+
+  /* Bottom tab bar — flex child of #app, NOT position:fixed (O4) */
+  .bottom-tabs {
+    height: calc(56px + env(safe-area-inset-bottom, 0px));
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    display: flex; border-top: 1px solid var(--border);
+    background: var(--bg-elev); flex: 0 0 auto;
+  }
+  .bottom-tabs button {
+    flex: 1; background: none; border: none; color: var(--text-dim);
+    font-size: 11px; font-weight: 500; cursor: pointer; display: flex;
+    flex-direction: column; align-items: center; justify-content: center;
+    gap: 2px; transition: color .15s;
+  }
+  .bottom-tabs button.active { color: var(--accent); }
+
+  /* Drawer — mobile sidebar slides in from left (off-canvas) */
+  .drawer {
+    position: fixed; top: 48px; bottom: 0; left: 0;
+    width: 280px; max-width: 85vw;
+    transform: translateX(-100%);
+    transition: transform 200ms; z-index: 20;
+    box-shadow: 2px 0 12px rgba(0,0,0,0.4);
+  }
+  .drawer.open { transform: translateX(0); }
+
+  /* Bottom sheet — mobile detail slides up from bottom (off-canvas) */
+  .sheet {
+    position: fixed; left: 0; right: 0; bottom: 0;
+    max-height: 70vh;
+    transform: translateY(100%);
+    transition: transform 200ms; border-radius: 12px 12px 0 0;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    z-index: 20; box-shadow: 0 -4px 16px rgba(0,0,0,0.4);
+  }
+  .sheet.open { transform: translateY(0); }
+  .sheet-close {
+    position: absolute; top: 8px; right: 8px;
+    width: 32px; height: 32px; border-radius: 50%; border: none;
+    background: var(--bg); color: var(--text-dim); cursor: pointer;
+    font-size: 16px; display: flex; align-items: center; justify-content: center;
+    z-index: 21;
+  }
+  .sheet-close:hover { background: var(--bg-elev2); color: var(--text); }
+
+  /* Scrim — semi-transparent backdrop for drawer/sheet */
+  .scrim {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.5);
+    z-index: 10; opacity: 0; pointer-events: none;
+    transition: opacity 200ms;
+  }
+  .scrim.visible { opacity: 1; pointer-events: auto; }
+
+  /* ===== Touch targets (mobile/tablet only — gated inside max-width:1023px) (O5) ===== */
+  @media (max-width: 1023px) {
+    .domain-item, .filter-group label, .pill, .graph-controls button,
+    .bottom-tabs button, .hamburger, .sheet-close {
+      min-height: 44px; min-width: 44px;
+    }
+  }
+
+  /* ===== Tablet (>=640px) — hide bottom tabs, show inline search ===== */
+  @media (min-width: 640px) {
+    .bottom-tabs { display: none; }
+    #app { height: calc(100vh - 48px); }
+  }
+
+  /* ===== Desktop (>=1024px) — restore EXACT current 3-column grid (regression-free) ===== */
+  @media (min-width: 1024px) {
+    #app {
+      display: grid;
+      grid-template-columns: 280px 1fr 360px;
+      grid-template-rows: 1fr;
+      height: calc(100vh - 48px - 28px);
+    }
+    .hamburger { display: none; }
+    header .stats { display: flex; }
+    header .view-toggle { display: flex; }
+    footer { display: flex; }
+    .bottom-tabs { display: none; }
+    .drawer {
+      position: static; transform: none;
+      box-shadow: none; z-index: auto; max-width: none;
+    }
+    .sheet {
+      position: static; transform: none;
+      box-shadow: none; border-radius: 0;
+      padding-bottom: 0; z-index: auto; max-height: none;
+    }
+    .sheet-close { display: none; }
+    .scrim { display: none; }
+  }
 </style>
 </head>
 <body>
 <header>
+  <button class="hamburger" id="hamburger" title="Menu">&#9776;</button>
   <div class="logo">
     <svg class="icon" viewBox="0 0 16 16"><path d="M8 0a8 8 0 100 16A8 8 0 008 0zM5.5 11.5l-3-3 1.4-1.4 1.6 1.6 4-4 1.4 1.4-5.4 5.4z"/></svg>
     realmemory
@@ -333,7 +437,7 @@ export const INDEX_HTML = `<!doctype html>
   </div>
 </header>
 <div id="app">
-  <aside id="sidebar">
+  <aside id="sidebar" class="drawer">
     <div class="sidebar-section">
       <h2>Domains <span class="count" id="domain-count"></span></h2>
       <div class="domain-tree" id="domain-tree">
@@ -403,13 +507,22 @@ export const INDEX_HTML = `<!doctype html>
     </div>
   </main>
 
-  <aside id="detail">
-    <div class="placeholder">
-      <div class="icon">&#128218;</div>
-      Select a memory to inspect its details.
+  <aside id="detail" class="sheet">
+    <button class="sheet-close" id="sheet-close" title="Close">&#10005;</button>
+    <div id="detail-content">
+      <div class="placeholder">
+        <div class="icon">&#128218;</div>
+        Select a memory to inspect its details.
+      </div>
     </div>
   </aside>
+  <div class="bottom-tabs">
+    <button class="tab active" data-tab="graph">Graph</button>
+    <button class="tab" data-tab="list">List</button>
+    <button class="tab" data-tab="detail">Detail</button>
+  </div>
 </div>
+<div class="scrim" id="scrim"></div>
 <footer id="legend">
   <span class="legend-item"><span class="dot" style="background:#58a6ff"></span> user_preference</span>
   <span class="legend-item"><span class="dot" style="background:#3fb950"></span> task_pattern</span>
