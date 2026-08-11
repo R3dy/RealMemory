@@ -316,6 +316,26 @@ describe("MemoryStore.search()", () => {
     await store.close();
   });
 
+  it("filters by domain", async () => {
+    const store = await freshStore({ projectId: "proj-1" });
+    await store.store({ content: "aws lesson", type: "lesson_learned", domain: "aws" });
+    await store.store({ content: "test lesson", type: "lesson_learned", domain: "testing" });
+    const res = await store.search({ domain: "aws" });
+    expect(res.memories).toHaveLength(1);
+    expect(res.memories[0].domain).toBe("aws");
+    await store.close();
+  });
+
+  it("filters by category", async () => {
+    const store = await freshStore({ projectId: "proj-1" });
+    await store.store({ content: "gotcha", type: "lesson_learned", category: "gotcha" });
+    await store.store({ content: "cost", type: "lesson_learned", category: "cost" });
+    const res = await store.search({ category: "gotcha" });
+    expect(res.memories).toHaveLength(1);
+    expect(res.memories[0].category).toBe("gotcha");
+    await store.close();
+  });
+
   it("sorts by weight descending by default", async () => {
     const store = await freshStore({ projectId: "proj-1" });
     await seed(store);

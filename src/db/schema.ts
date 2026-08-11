@@ -97,7 +97,30 @@ CREATE TABLE IF NOT EXISTS meta (
 );
 `;
 
-export const CURRENT_SCHEMA_VERSION = 2;
+/**
+ * Schema version 3 — adds domain, source, and category columns to the
+ * memories table for richer classification and querying.
+ *
+ * These columns are nullable / defaulted so existing rows survive without
+ * a backfill — but the migration script (scripts/migrate-v3.ts) populates
+ * them retroactively by parsing tags + content.
+ */
+export const SCHEMA_V3 = `
+-- Domain: primary technology/topic (e.g. "aws", "testing", "opencode")
+ALTER TABLE memories ADD COLUMN domain TEXT;
+
+-- Source: JSON { project, session, ref, refType } tracking origin
+ALTER TABLE memories ADD COLUMN source TEXT NOT NULL DEFAULT '{}';
+
+-- Category: sub-classification within type (e.g. "gotcha", "cost", "safety")
+ALTER TABLE memories ADD COLUMN category TEXT;
+
+-- Indexes for the new columns
+CREATE INDEX IF NOT EXISTS idx_memories_domain ON memories(domain);
+CREATE INDEX IF NOT EXISTS idx_memories_category ON memories(category);
+`;
+
+export const CURRENT_SCHEMA_VERSION = 3;
 
 /**
  * Migrations map: version -> SQL to apply.
@@ -106,6 +129,7 @@ export const CURRENT_SCHEMA_VERSION = 2;
 const MIGRATIONS: Record<number, string> = {
   1: SCHEMA_V1,
   2: SCHEMA_V2,
+  3: SCHEMA_V3,
 };
 
 /**

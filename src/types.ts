@@ -25,6 +25,87 @@ export type RelationshipType =
 export type MemoryScope = "project" | "global";
 
 /**
+ * A sub-classification within a memory type — lets the agent and UI group
+ * memories by the *nature* of the knowledge, not just its domain.
+ *
+ * For lesson_learned:
+ *   - "gotcha": a silent failure, a trap, a thing that looks right but isn't
+ *   - "cost": a billing / resource leak lesson
+ *   - "safety": a destructive-action / data-loss guardrail
+ *   - "integration": a cross-system mismatch (key/format/protocol)
+ *   - "process": a workflow / tracking / methodology lesson
+ *   - "tooling": a tool/version/plugin quirk
+ *   - "performance": a perf / timeout / scaling lesson
+ *
+ * For other types, category is optional and free-form.
+ */
+export type MemoryCategory =
+  | "gotcha"
+  | "cost"
+  | "safety"
+  | "integration"
+  | "process"
+  | "tooling"
+  | "performance"
+  | string; // allow future categories without a schema bump
+
+/**
+ * Structured origin tracking — where this memory came from.
+ * Populated automatically when possible (project context, session id)
+ * and retroactively by migration for older memories.
+ */
+export interface MemorySource {
+  /** Which project this memory originated from (e.g. "realhax", "realvol"). */
+  project?: string;
+  /** The session that created or captured this memory, if known. */
+  session?: string;
+  /** A reference: GitHub issue/PR number, file:line, ADR id, etc. */
+  ref?: string;
+  /** What kind of reference: "issue", "pr", "adr", "file", "commit", "url". */
+  refType?: "issue" | "pr" | "adr" | "file" | "commit" | "url";
+}
+
+/**
+ * Structured metadata for memory content. Fields are optional and
+ * type-dependent — the UI renders whichever are present as labeled sections
+ * instead of a wall of free text.
+ *
+ * For lesson_learned memories, the Assumed/Reality/Lesson structure is
+ * parsed into discrete fields so the UI can render them as a structured
+ * card and the agent can query them individually.
+ */
+export interface MemoryMetadata {
+  // --- Lesson-learned structured fields ---
+  /** What was assumed before the lesson was learned. */
+  assumed?: string;
+  /** What actually happened / the ground truth. */
+  reality?: string;
+  /** The actionable takeaway. */
+  lesson?: string;
+  /** History of re-hits / reinforcements with date + context. */
+  reinforced?: Array<{ date: string; context: string }>;
+  /** When the lesson was first learned (ISO date). */
+  learnedDate?: string;
+  /** Which project context the lesson was learned in. */
+  learnedProject?: string;
+
+  // --- Codebase-fact fields ---
+  /** Where in the codebase this fact lives (file:line, module, route). */
+  location?: string;
+  /** Supporting evidence (grep output, test result, etc.). */
+  evidence?: string;
+
+  // --- Session-summary fields ---
+  /** What was accomplished in the session. */
+  outcomes?: string[];
+  /** How long the session lasted (human-readable). */
+  duration?: string;
+
+  // --- Generic extension point ---
+  [key: string]: unknown;
+}
+
+/**
  * The core Memory record — a single unit of persistent agent memory.
  */
 export interface Memory {
@@ -32,6 +113,12 @@ export interface Memory {
   content: string;
   type: MemoryType;
   scope: MemoryScope;
+  /** Primary technology/topic domain (e.g. "aws", "testing", "opencode"). */
+  domain?: string;
+  /** Sub-classification within the type (e.g. "gotcha", "cost", "safety"). */
+  category?: string;
+  /** Structured origin tracking — where this memory came from. */
+  source?: MemorySource;
   tags: string[];
   weight: number;
   confidence: number;
@@ -41,7 +128,8 @@ export interface Memory {
   updatedAt: string;
   accessCount: number;
   reinforcementCount: number;
-  metadata: Record<string, unknown>;
+  /** Structured metadata — type-dependent fields the UI renders as sections. */
+  metadata: MemoryMetadata;
   embedding?: number[];
   status: "active" | "archived";
 }
@@ -74,9 +162,15 @@ export interface StoreInput {
   type: MemoryType;
   tags?: string[];
   scope?: MemoryScope;
+  /** Primary technology/topic domain (e.g. "aws", "testing"). */
+  domain?: string;
+  /** Sub-classification within the type. */
+  category?: string;
+  /** Structured origin — where this memory came from. */
+  source?: MemorySource;
   confidence?: number;
   relationships?: RelationshipInput[];
-  metadata?: Record<string, unknown>;
+  metadata?: MemoryMetadata;
 }
 
 /**
@@ -89,6 +183,8 @@ export interface RecallQuery {
   threshold?: number;
   types?: MemoryType[];
   tags?: string[];
+  /** Filter by domain (e.g. "aws", "testing"). */
+  domain?: string;
   traverse?: boolean;
 }
 
@@ -109,6 +205,10 @@ export interface SearchQuery {
   scope?: "project" | "global" | "all";
   types?: MemoryType[];
   tags?: string[];
+  /** Filter by domain (e.g. "aws", "testing", "opencode"). */
+  domain?: string;
+  /** Filter by category (e.g. "gotcha", "cost", "safety"). */
+  category?: string;
   minWeight?: number;
   /** ISO 8601 timestamp. */
   createdAfter?: string;
@@ -137,7 +237,13 @@ export interface UpdatePatch {
   content?: string;
   confidence?: number;
   tags?: string[];
-  metadata?: Record<string, unknown>;
+  /** Update the domain classification. */
+  domain?: string;
+  /** Update the category. */
+  category?: string;
+  /** Update the source. */
+  source?: MemorySource;
+  metadata?: MemoryMetadata;
   reinforce?: boolean;
 }
 
@@ -148,6 +254,10 @@ export interface ListQuery {
   scope?: "project" | "global" | "all";
   type?: MemoryType;
   tag?: string;
+  /** Filter by domain. */
+  domain?: string;
+  /** Filter by category. */
+  category?: string;
   minWeight?: number;
   limit?: number;
   offset?: number;

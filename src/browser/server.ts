@@ -180,6 +180,11 @@ async function handleRequest(
     return;
   }
 
+  if (pathname === "/api/domains") {
+    await handleDomains(res, store);
+    return;
+  }
+
   if (pathname === "/api/graph") {
     await handleGraph(url, res, store);
     return;
@@ -240,6 +245,12 @@ async function handleGraph(
   const tagsRaw = params.get("tags");
   const tags = tagsRaw ? tagsRaw.split(",").filter((t) => t.length > 0) : undefined;
 
+  // Domain filter.
+  const domain = params.get("domain") ?? undefined;
+
+  // Category filter.
+  const category = params.get("category") ?? undefined;
+
   // minWeight filter.
   let minWeight: number | undefined;
   const minWeightRaw = params.get("minWeight");
@@ -265,13 +276,15 @@ async function handleGraph(
     nodes = await store.searchText(q, limit);
     // Apply additional structured filters on top (scope/types/tags/dates) by
     // post-filtering, since searchText only does FTS5.
-    nodes = applyStructuralFilters(nodes, { scope, types, tags, minWeight, createdAfter, createdBefore });
+    nodes = applyStructuralFilters(nodes, { scope, types, tags, minWeight, createdAfter, createdBefore, domain, category });
     if (nodes.length > limit) nodes = nodes.slice(0, limit);
   } else {
     const result = await store.search({
       scope,
       types,
       tags,
+      domain,
+      category,
       minWeight,
       createdAfter,
       createdBefore,
@@ -306,6 +319,8 @@ interface StructuralFilter {
   scope: "all" | "project" | "global";
   types?: MemoryType[];
   tags?: string[];
+  domain?: string;
+  category?: string;
   minWeight?: number;
   createdAfter?: string;
   createdBefore?: string;
@@ -319,11 +334,44 @@ function applyStructuralFilters(nodes: Memory[], f: StructuralFilter): Memory[] 
     if (f.tags && f.tags.length > 0) {
       if (!f.tags.some((t) => n.tags.includes(t))) return false;
     }
+    if (f.domain && n.domain !== f.domain) return false;
+    if (f.category && n.category !== f.category) return false;
     if (f.minWeight !== undefined && n.weight < f.minWeight) return false;
     if (f.createdAfter && n.createdAt < f.createdAfter) return false;
     if (f.createdBefore && n.createdAt > f.createdBefore) return false;
     return true;
   });
+}
+
+/**
+ * Return domain breakdown stats for the sidebar: count of memories per
+ * domain, with type breakdown within each domain.
+ */
+async function handleDomains(
+  res: ServerResponse,
+  store: MemoryStore,
+): Promise<void> {
+  const result = await store.search({
+    scope: "all",
+    limit: 2000,
+    offset: 0,
+    sortBy: "weight",
+    sortOrder: "desc",
+  });
+  const domainMap = new Map<string, { count: number; types: Record<string, number>; categories: Record<string, number> }>();
+  for (const m of result.memories) {
+    const d = m.domain ?? "uncategorized";
+    if (!domainMap.has(d)) domainMap.set(d, { count: 0, types: {}, categories: {} });
+    const entry = domainMap.get(d)!;
+    entry.count++;
+    entry.types[m.type] = (entry.types[m.type] ?? 0) + 1;
+    const cat = m.category ?? "uncategorized";
+    entry.categories[cat] = (entry.categories[cat] ?? 0) + 1;
+  }
+  const domains = Array.from(domainMap.entries())
+    .map(([name, stats]) => ({ name, ...stats }))
+    .sort((a, b) => b.count - a.count);
+  sendJson(res, 200, { domains, total: result.memories.length });
 }
 
 async function handleMemory(

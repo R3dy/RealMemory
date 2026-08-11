@@ -163,6 +163,44 @@ describe("GET /api/graph", () => {
     expect(afterA.memory.updatedAt).toBe(beforeA.memory.updatedAt);
     expect(afterB.memory.updatedAt).toBe(beforeB.memory.updatedAt);
   });
+
+  it("filters by domain", async () => {
+    await store.store({ content: "AWS lesson", type: "lesson_learned", domain: "aws" });
+    await store.store({ content: "testing lesson", type: "lesson_learned", domain: "testing" });
+
+    const res = await request("/api/graph?domain=aws");
+    const data = JSON.parse(res.body);
+    expect(data.nodes).toHaveLength(1);
+    expect(data.nodes[0].domain).toBe("aws");
+  });
+
+  it("filters by category", async () => {
+    await store.store({ content: "gotcha lesson", type: "lesson_learned", category: "gotcha" });
+    await store.store({ content: "cost lesson", type: "lesson_learned", category: "cost" });
+
+    const res = await request("/api/graph?category=gotcha");
+    const data = JSON.parse(res.body);
+    expect(data.nodes).toHaveLength(1);
+    expect(data.nodes[0].category).toBe("gotcha");
+  });
+});
+
+describe("GET /api/domains", () => {
+  it("returns domain breakdown with counts", async () => {
+    await store.store({ content: "aws 1", type: "lesson_learned", domain: "aws" });
+    await store.store({ content: "aws 2", type: "codebase_fact", domain: "aws" });
+    await store.store({ content: "test 1", type: "lesson_learned", domain: "testing" });
+
+    const res = await request("/api/domains");
+    expect(res.status).toBe(200);
+    const data = JSON.parse(res.body);
+    expect(data.total).toBe(3);
+    const aws = data.domains.find((d: { name: string }) => d.name === "aws");
+    expect(aws).toBeDefined();
+    expect(aws.count).toBe(2);
+    expect(aws.types.lesson_learned).toBe(1);
+    expect(aws.types.codebase_fact).toBe(1);
+  });
 });
 
 describe("GET /api/memory/:id", () => {

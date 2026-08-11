@@ -4,7 +4,7 @@ import { INDEX_HTML } from "../src/browser/assets";
 describe("browser assets", () => {
   it("INDEX_HTML contains the required DOM structure", () => {
     expect(INDEX_HTML).toContain('id="network"');
-    expect(INDEX_HTML).toContain('id="filters"');
+    expect(INDEX_HTML).toContain('id="sidebar"');
     expect(INDEX_HTML).toContain('id="detail"');
     expect(INDEX_HTML).toContain('id="legend"');
   });

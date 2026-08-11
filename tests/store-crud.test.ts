@@ -95,6 +95,36 @@ describe("MemoryStore.store()", () => {
     await store.close();
   });
 
+  it("persists domain, category, and source fields", async () => {
+    const store = await freshStore({ projectId: "realhax" });
+    const mem = await store.store({
+      content: "AWS rejects non-ASCII string params on every API.",
+      type: "lesson_learned",
+      domain: "aws",
+      category: "gotcha",
+      source: { project: "realhax", ref: "#114", refType: "issue" },
+      tags: ["aws", "ascii"],
+    });
+    expect(mem.domain).toBe("aws");
+    expect(mem.category).toBe("gotcha");
+    expect(mem.source).toEqual({ project: "realhax", ref: "#114", refType: "issue" });
+    const fetched = await store.get(mem.id, false);
+    expect(fetched.memory.domain).toBe("aws");
+    expect(fetched.memory.category).toBe("gotcha");
+    expect(fetched.memory.source?.project).toBe("realhax");
+    expect(fetched.memory.source?.ref).toBe("#114");
+    await store.close();
+  });
+
+  it("defaults domain, category, source to null/empty when not provided", async () => {
+    const store = await freshStore();
+    const mem = await store.store({ content: "basic memory", type: "contextual_note" });
+    expect(mem.domain).toBeUndefined();
+    expect(mem.category).toBeUndefined();
+    expect(mem.source).toEqual({});
+    await store.close();
+  });
+
   it("persists metadata as JSON and returns it correctly", async () => {
     const store = await freshStore();
     const mem = await store.store({

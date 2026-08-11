@@ -19,6 +19,7 @@ import type {
   MemoryStoreConfig,
   MemoryType,
   MemoryScope,
+  MemorySource,
 } from "./types";
 import { MemoryStoreError, MemoryNotFoundError, InvalidTypeError, InvalidConfidenceError, DuplicateRelationshipError, SelfRelationshipError } from "./errors";
 import type { DbConnection } from "./db/connection";
@@ -133,6 +134,9 @@ interface MemoryRow {
   embedding: Uint8Array | null;
   status: string;
   project_id: string | null;
+  domain: string | null;
+  source: string;
+  category: string | null;
 }
 
 /** Joined row from a relationships+memories query with aliased rel_* columns. */
@@ -157,6 +161,19 @@ function parseMetadataJson(metadataJson: string): Record<string, unknown> {
   return {};
 }
 
+/** Parse a JSON-encoded source column into a MemorySource object; corrupt/invalid values become {}. */
+function parseSourceJson(sourceJson: string): MemorySource {
+  try {
+    const parsed = JSON.parse(sourceJson) as unknown;
+    if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+      return parsed as MemorySource;
+    }
+  } catch {
+    // Fall through — invalid/corrupt source is treated as empty.
+  }
+  return {};
+}
+
 /** Convert a raw DB row (snake_case, JSON strings) into a public Memory object. */
 function rowToMemory(row: MemoryRow): Memory {
   let tags: string[];
@@ -168,6 +185,7 @@ function rowToMemory(row: MemoryRow): Memory {
   }
 
   const metadata = parseMetadataJson(row.metadata);
+  const source = parseSourceJson(row.source);
 
   let embedding: number[] | undefined;
   if (row.embedding) {
@@ -182,6 +200,9 @@ function rowToMemory(row: MemoryRow): Memory {
     content: row.content,
     type: row.type as MemoryType,
     scope: row.scope as MemoryScope,
+    domain: row.domain ?? undefined,
+    category: row.category ?? undefined,
+    source,
     tags,
     weight: row.weight,
     confidence: row.confidence,
@@ -353,9 +374,10 @@ export class MemoryStore {
     // 6. project_id (scope resolved above).
     const projectId = scope === "global" ? null : this.config.projectId ?? null;
 
-    // 7. Serialize tags + metadata.
+    // 7. Serialize tags + metadata + source.
     const tagsJson = JSON.stringify(input.tags ?? []);
     const metadataJson = JSON.stringify(input.metadata ?? {});
+    const sourceJson = JSON.stringify(input.source ?? {});
 
     // 8. Initial composite weight (relevance = 1.0 at store time; no query context yet).
     const weight = computeWeight(
@@ -367,9 +389,9 @@ export class MemoryStore {
     // 9. INSERT.
     db.prepare(
       `INSERT INTO memories
-        (id, content, type, scope, tags, weight, confidence, created_at, updated_at, access_count, reinforcement_count, metadata, status, project_id)
+        (id, content, type, scope, tags, weight, confidence, created_at, updated_at, access_count, reinforcement_count, metadata, status, project_id, domain, source, category)
        VALUES
-        (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)`,
+        (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`,
     ).run(
       id,
       content,
@@ -384,6 +406,9 @@ export class MemoryStore {
       0,
       metadataJson,
       projectId,
+      input.domain ?? null,
+      sourceJson,
+      input.category ?? null,
     );
 
     // 9b. Embedding (async, best-effort — never block store on failure).
@@ -673,6 +698,18 @@ export class MemoryStore {
       params.push(`%"${query.tag.replace(/[%_]/g, (c) => "\\" + c)}"%`);
     }
 
+    // Domain filter.
+    if (query.domain) {
+      where.push("domain = ?");
+      params.push(query.domain);
+    }
+
+    // Category filter.
+    if (query.category) {
+      where.push("category = ?");
+      params.push(query.category);
+    }
+
     // minWeight filter.
     if (typeof query.minWeight === "number") {
       where.push("weight >= ?");
@@ -817,6 +854,11 @@ export class MemoryStore {
       for (const tag of query.tags) {
         params.push(`%"${tag.replace(/[%_\\]/g, (c) => "\\" + c)}"%`);
       }
+    }
+
+    if (query.domain) {
+      where.push(`${prefix}domain = ?`);
+      params.push(query.domain);
     }
 
     return { whereSql: where.join(" AND "), params };
@@ -1101,6 +1143,18 @@ export class MemoryStore {
       }
     }
 
+    // Domain filter.
+    if (query.domain) {
+      where.push("domain = ?");
+      params.push(query.domain);
+    }
+
+    // Category filter.
+    if (query.category) {
+      where.push("category = ?");
+      params.push(query.category);
+    }
+
     // minWeight filter.
     if (typeof query.minWeight === "number") {
       where.push("weight >= ?");
@@ -1345,6 +1399,26 @@ export class MemoryStore {
       };
       sets.push("metadata = ?");
       params.push(JSON.stringify(mergedMetadata));
+    }
+
+    // domain (direct replacement).
+    if (typeof patch.domain === "string") {
+      sets.push("domain = ?");
+      params.push(patch.domain);
+    }
+
+    // category (direct replacement).
+    if (typeof patch.category === "string") {
+      sets.push("category = ?");
+      params.push(patch.category);
+    }
+
+    // source (merge with existing, like metadata).
+    if (patch.source && typeof patch.source === "object") {
+      const existingSource = parseSourceJson(row.source);
+      const mergedSource = { ...existingSource, ...patch.source };
+      sets.push("source = ?");
+      params.push(JSON.stringify(mergedSource));
     }
 
     // 4. Reinforce: bump reinforcement_count + boost confidence (diminishing returns).
