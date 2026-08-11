@@ -499,6 +499,8 @@ export const INDEX_HTML = `<!doctype html>
       <th data-sort="weight">Weight</th>
       <th data-sort="content">Content</th>
       <th data-sort="tags">Tags</th>
+      <th data-sort="createdAt">Created</th>
+      <th data-sort="updatedAt">Updated</th>
     </tr></thead><tbody id="list-body"></tbody></table></div>
     <div id="empty-msg">No memories match the current filters.</div>
     <div class="graph-controls">
@@ -669,6 +671,8 @@ function updateListBody(nodes) {
       '<td><span class="weight-bar"><span class="fill" style="width:' + Math.round(m.weight * 100) + '%;background:' + wColor + '"></span></span> ' + m.weight.toFixed(2) + '</td>' +
       '<td>' + esc(m.content.slice(0, 80)) + (m.content.length > 80 ? '...' : '') + '</td>' +
       '<td style="color:var(--text-dim)">' + esc(tags) + '</td>' +
+      '<td style="color:var(--text-dim);white-space:nowrap">' + esc(fmtDate(m.createdAt)) + '</td>' +
+      '<td style="color:var(--text-dim);white-space:nowrap">' + esc(fmtDate(m.updatedAt)) + '</td>' +
       '</tr>';
   }).join('');
   tbody.querySelectorAll('tr').forEach(tr => {
@@ -692,6 +696,8 @@ function sortNodes(nodes) {
       case 'weight': av = a.weight; bv = b.weight; break;
       case 'content': av = a.content; bv = b.content; break;
       case 'tags': av = (a.tags || []).join(','); bv = (b.tags || []).join(','); break;
+      case 'createdAt': av = a.createdAt || ''; bv = b.createdAt || ''; break;
+      case 'updatedAt': av = a.updatedAt || ''; bv = b.updatedAt || ''; break;
       default: av = a.weight; bv = b.weight;
     }
     if (typeof av === 'string') return dir * av.localeCompare(bv);
@@ -829,6 +835,15 @@ function showPlaceholder() {
 
 function esc(s) {
   return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function fmtDate(iso) {
+  if (!iso) return '\u2014';
+  var d = new Date(iso);
+  if (isNaN(d.getTime())) return '\u2014';
+  var p = function(n) { return String(n).padStart(2, '0'); };
+  return d.getFullYear() + '-' + p(d.getMonth()+1) + '-' + p(d.getDate())
+       + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
 }
 
 // ===== Domain sidebar =====
