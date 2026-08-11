@@ -570,6 +570,9 @@ let currentView = 'graph';
 let activeDomain = null;
 let activeCategory = null;
 let listSort = { col: 'weight', dir: 'desc' };
+let selectedMemoryId = null;
+let activeTab = 'graph';
+let currentTier = 'desktop';
 
 // ===== Query building =====
 function buildQuery() {
@@ -630,11 +633,14 @@ async function fetchGraph() {
         barnesHut: { gravitationalConstant: -3000, centralGravity: 0.3, springLength: 120, springConstant: 0.05, damping: 0.4 },
         stabilization: { iterations: 150 }
       },
-      interaction: { hover: true, tooltipDelay: 200, navigationButtons: false, keyboard: false }
+      interaction: { hover: true, tooltipDelay: 200, navigationButtons: false, keyboard: false, zoomView: true, dragView: true, multiselect: false },
+      manipulation: { enabled: false }
     });
     network.on('click', function(params) {
-      if (params.nodes.length > 0) showDetail(params.nodes[0]);
-      else showPlaceholder();
+      if (params.nodes.length > 0) {
+        showDetail(params.nodes[0]);
+        openDetailSheet();
+      } else showPlaceholder();
     });
     network.on('doubleClick', function(params) {
       if (params.nodes.length > 0) network.focus(params.nodes[0], { scale: 1.5, animation: { duration: 400 } });
@@ -670,6 +676,7 @@ function updateListBody(nodes) {
       tbody.querySelectorAll('tr').forEach(t => t.classList.remove('selected'));
       tr.classList.add('selected');
       showDetail(tr.dataset.id);
+      openDetailSheet();
     });
   });
 }
@@ -694,6 +701,7 @@ function sortNodes(nodes) {
 
 // ===== Detail panel =====
 async function showDetail(id) {
+  selectedMemoryId = id;
   const resp = await fetch('/api/memory/' + encodeURIComponent(id));
   const data = await resp.json();
   const m = data.memory;
@@ -805,7 +813,7 @@ async function showDetail(id) {
   }
 
   html += '</div>';
-  document.getElementById('detail').innerHTML = html;
+  document.getElementById('detail-content').innerHTML = html;
   document.querySelectorAll('#detail .rel-link').forEach(el => {
     el.addEventListener('click', () => {
       showDetail(el.dataset.id);
@@ -815,7 +823,8 @@ async function showDetail(id) {
 }
 
 function showPlaceholder() {
-  document.getElementById('detail').innerHTML = '<div class="placeholder"><div class="icon">\\u{1F4D8}</div>Select a memory to inspect its details.</div>';
+  selectedMemoryId = null;
+  document.getElementById('detail-content').innerHTML = '<div class="placeholder"><div class="icon">\\u{1F4D8}</div>Select a memory to inspect its details.</div>';
 }
 
 function esc(s) {
@@ -946,7 +955,164 @@ document.querySelectorAll('#list-view th').forEach(th => {
   });
 });
 
+// ===== Viewport tier detection (mobile-first responsive) =====
+function getViewportTier() {
+  if (window.matchMedia('(min-width: 1024px)').matches) return 'desktop';
+  if (window.matchMedia('(min-width: 640px)').matches) return 'tablet';
+  return 'mobile';
+}
+function isNetworkVisible() {
+  const el = document.getElementById('network');
+  return el && el.style.display !== 'none';
+}
+function clearMobileInlineStyles() {
+  const networkEl = document.getElementById('network');
+  const listViewEl = document.getElementById('list-view');
+  const detailEl = document.getElementById('detail');
+  const sheetCloseEl = document.getElementById('sheet-close');
+  if (networkEl) networkEl.style.display = '';
+  if (listViewEl) { listViewEl.style.display = ''; listViewEl.classList.remove('show'); }
+  if (detailEl) {
+    detailEl.style.display = '';
+    detailEl.style.transform = '';
+    detailEl.style.position = '';
+    detailEl.style.maxHeight = '';
+    detailEl.style.borderRadius = '';
+    detailEl.style.boxShadow = '';
+    detailEl.style.paddingBottom = '';
+    detailEl.style.zIndex = '';
+  }
+  if (sheetCloseEl) sheetCloseEl.style.display = '';
+}
+function openDetailSheet() {
+  if (getViewportTier() === 'desktop') return;
+  const detailEl = document.getElementById('detail');
+  detailEl.style.display = 'block';
+  detailEl.offsetHeight;
+  detailEl.classList.add('open');
+  document.getElementById('scrim').classList.add('visible');
+}
+function closeDetailSheet() {
+  if (getViewportTier() === 'desktop') return;
+  const detailEl = document.getElementById('detail');
+  detailEl.classList.remove('open');
+  document.getElementById('scrim').classList.remove('visible');
+  setTimeout(() => {
+    if (!detailEl.classList.contains('open') && activeTab !== 'detail') {
+      detailEl.style.display = 'none';
+    }
+  }, 200);
+}
+
+// ===== Mobile interaction handlers (short-circuit on desktop) =====
+document.getElementById('hamburger').addEventListener('click', () => {
+  if (getViewportTier() === 'desktop') return;
+  document.getElementById('sidebar').classList.toggle('open');
+  document.getElementById('scrim').classList.toggle('visible');
+});
+
+document.getElementById('scrim').addEventListener('click', () => {
+  if (getViewportTier() === 'desktop') return;
+  document.getElementById('sidebar').classList.remove('open');
+  document.getElementById('detail').classList.remove('open');
+  document.getElementById('scrim').classList.remove('visible');
+  if (activeTab !== 'detail') {
+    setTimeout(() => {
+      const detailEl = document.getElementById('detail');
+      if (!detailEl.classList.contains('open')) detailEl.style.display = 'none';
+    }, 200);
+  }
+});
+
+document.getElementById('sheet-close').addEventListener('click', () => {
+  if (getViewportTier() === 'desktop') return;
+  closeDetailSheet();
+});
+
+document.querySelectorAll('.bottom-tabs button').forEach(btn => {
+  btn.addEventListener('click', () => {
+    if (getViewportTier() === 'desktop') return;
+    const tab = btn.dataset.tab;
+    activeTab = tab;
+    document.querySelectorAll('.bottom-tabs button').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    const networkEl = document.getElementById('network');
+    const listViewEl = document.getElementById('list-view');
+    const detailEl = document.getElementById('detail');
+    const sheetCloseEl = document.getElementById('sheet-close');
+    detailEl.style.transform = '';
+    detailEl.style.position = '';
+    detailEl.style.maxHeight = '';
+    detailEl.style.borderRadius = '';
+    detailEl.style.boxShadow = '';
+    detailEl.style.paddingBottom = '';
+    detailEl.style.zIndex = '';
+    if (tab === 'graph') {
+      networkEl.style.display = 'block';
+      listViewEl.style.display = 'none';
+      listViewEl.classList.remove('show');
+      detailEl.style.display = 'none';
+      sheetCloseEl.style.display = '';
+      if (network) { network.redraw(); network.fit({ animation: { duration: 300 } }); }
+    } else if (tab === 'list') {
+      networkEl.style.display = 'none';
+      listViewEl.style.display = 'block';
+      listViewEl.classList.add('show');
+      detailEl.style.display = 'none';
+      sheetCloseEl.style.display = '';
+    } else if (tab === 'detail') {
+      networkEl.style.display = 'none';
+      listViewEl.style.display = 'none';
+      listViewEl.classList.remove('show');
+      detailEl.style.display = 'block';
+      detailEl.style.transform = 'none';
+      detailEl.style.position = 'relative';
+      detailEl.style.maxHeight = 'none';
+      detailEl.style.borderRadius = '0';
+      detailEl.style.boxShadow = 'none';
+      detailEl.style.paddingBottom = '0';
+      sheetCloseEl.style.display = 'none';
+      if (!selectedMemoryId) {
+        document.getElementById('detail-content').innerHTML = '<div class="placeholder"><div class="icon">&#128218;</div>Tap a node to see its detail.</div>';
+      }
+    }
+  });
+});
+
+// Debounced resize: recompute tier, redraw+fit network if visible (O3)
+const debouncedResize = debounce(() => {
+  const newTier = getViewportTier();
+  if (newTier !== currentTier) {
+    currentTier = newTier;
+    if (newTier === 'desktop') {
+      clearMobileInlineStyles();
+      document.getElementById('sidebar').classList.remove('open');
+      document.getElementById('detail').classList.remove('open');
+      document.getElementById('scrim').classList.remove('visible');
+      document.querySelectorAll('.bottom-tabs button').forEach(b => b.classList.remove('active'));
+      const graphTab = document.querySelector('.bottom-tabs button[data-tab="graph"]');
+      if (graphTab) graphTab.classList.add('active');
+      activeTab = 'graph';
+    }
+  }
+  if (network && isNetworkVisible()) {
+    network.redraw();
+    network.fit({ animation: { duration: 300 } });
+  }
+}, 200);
+window.addEventListener('resize', debouncedResize);
+
+// Debounced orientationchange: redraw+fit network if visible (O3)
+const debouncedOrient = debounce(() => {
+  if (network && isNetworkVisible()) {
+    network.redraw();
+    network.fit({ animation: { duration: 300 } });
+  }
+}, 200);
+window.addEventListener('orientationchange', debouncedOrient);
+
 // ===== Init =====
+currentTier = getViewportTier();
 fetchDomains();
 fetchGraph();
 fetchStats();
