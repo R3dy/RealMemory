@@ -294,7 +294,8 @@ pendingPredictions.set(callID, prediction);
 
 // tool.execute.after — detached
 const actual = classifyOutcome(output);
-const surprise = Math.abs(actual.success ? 1 : 0 - prediction.confidence);   // 0..1
+const expected = prediction.willSucceed ? prediction.confidence : 1 - prediction.confidence;
+const surprise = Math.abs((actual.success ? 1 : 0) - expected);   // 0..1
 
 if (surprise < 0.2) {
   // Expected. Cheap reinforcement of the supporting memories — no new row.
