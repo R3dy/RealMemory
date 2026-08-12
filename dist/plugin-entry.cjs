@@ -1753,6 +1753,33 @@ var MemoryStore = class {
     });
   }
   /**
+   * Return the single most-recent metrics row (by recorded_at) whose
+   * metric_name matches the given prefix (LIKE 'prefix%'). Returns null if no
+   * row matches. Additive: no schema change, no existing method signature
+   * change. Used by --doctor to read the latest hook_lands outcome value and
+   * the latest session_id (both unreachable via getMetricSummary, whose
+   * `latest` field is MAX(metric_value) and returns no session_id).
+   *
+   * (Synthetic-brain Phase 0 — resolves plan comments 2-C1 + 2-C4.)
+   */
+  async getLatestMetricRow(prefix) {
+    if (!this.db) return null;
+    const row = this.db.prepare(
+      "SELECT metric_name, metric_value, session_id, recorded_at FROM metrics WHERE metric_name LIKE ? ORDER BY recorded_at DESC LIMIT 1"
+    ).get(`${prefix}%`);
+    return row ?? null;
+  }
+  /**
+   * Count active memories in the store. Additive — used by the doctor report
+   * to determine if sessions have run (memories present = sessions happened).
+   * (Synthetic-brain Phase 0.)
+   */
+  async count() {
+    if (!this.db) return 0;
+    const row = this.db.prepare("SELECT COUNT(*) as c FROM memories WHERE status = 'active'").get();
+    return row.c;
+  }
+  /**
    * Bloat ratio: fraction of active memories with weight below
    * archiveThreshold. 0.0 on an empty store.
    */
@@ -1975,6 +2002,150 @@ async function evaluateDelta(store, state, userText, assistantText) {
       await store.recordMetric("recall_miss", 1);
     }
   }
+}
+
+// src/hook-probe.ts
+var ALWAYS_FIRE_HOOKS = [
+  "event:session.created",
+  "event:session.idle",
+  "chat.message",
+  "experimental.chat.system.transform"
+];
+var CONDITIONAL_HOOKS = [
+  "tool.execute.after",
+  "experimental.session.compacting"
+];
+var PROBED_HOOKS = [...ALWAYS_FIRE_HOOKS, ...CONDITIONAL_HOOKS];
+function createProbeState() {
+  return {
+    sessionId: null,
+    hostVersion: null,
+    sentinelToken: null,
+    sentinelPushedAt: null,
+    sentinelChecked: false,
+    lastLandsValue: null,
+    hostPersistsSystemContent: null
+  };
+}
+function resetProbeForSession(probe, sessionId) {
+  probe.sessionId = sessionId;
+  probe.sentinelToken = null;
+  probe.sentinelPushedAt = null;
+  probe.sentinelChecked = false;
+  probe.lastLandsValue = null;
+}
+function resolveHostVersion(ctx) {
+  if (process.env.OPENCODE_VERSION) return process.env.OPENCODE_VERSION;
+  const client = ctx?.client;
+  if (client?.app?.version) return client.app.version;
+  return "unknown";
+}
+function recordHookFired(getStore, probe, hookName) {
+  void (async () => {
+    try {
+      const store = await getStore();
+      await store.recordMetric(`hook_fired:${hookName}`, 1, probe.sessionId ?? void 0);
+      if (probe.hostVersion && probe.sentinelToken === null && !probe.sentinelChecked) {
+        await store.recordMetric(
+          `host_version:${probe.hostVersion}`,
+          1,
+          probe.sessionId ?? void 0
+        );
+      }
+    } catch {
+    }
+  })().catch(() => {
+  });
+}
+function recordLandsOutcome(getStore, probe, value) {
+  void (async () => {
+    try {
+      const store = await getStore();
+      await store.recordMetric(
+        "hook_lands:experimental.chat.system.transform",
+        value,
+        probe.sessionId ?? void 0
+      );
+    } catch {
+    }
+  })().catch(() => {
+  });
+}
+function pushSentinel(probe, output) {
+  if (probe.sentinelToken !== null) {
+    return { pushed: false, assertionOk: true };
+  }
+  const token = `<!-- realmemory-probe:${generateUlid()} -->`;
+  probe.sentinelToken = token;
+  probe.sentinelPushedAt = Date.now();
+  const sys = output?.system;
+  if (!Array.isArray(sys)) {
+    return { pushed: true, assertionOk: false };
+  }
+  sys.push(token);
+  const assertionOk = sys.includes(token);
+  return { pushed: true, assertionOk };
+}
+async function checkSentinelLanded(store, probe, fetchTranscript) {
+  const transcript = await fetchTranscript();
+  if (transcript === null) {
+    probe.lastLandsValue = "fetch-failed";
+    probe.sentinelChecked = true;
+    await store.recordMetric(
+      "hook_lands:experimental.chat.system.transform",
+      -2,
+      probe.sessionId ?? void 0
+    );
+    return;
+  }
+  if (probe.sentinelToken && transcript.includes(probe.sentinelToken)) {
+    probe.lastLandsValue = "found";
+    probe.sentinelChecked = true;
+    probe.hostPersistsSystemContent = true;
+    await store.recordMetric(
+      "hook_lands:experimental.chat.system.transform",
+      1,
+      probe.sessionId ?? void 0
+    );
+    await store.recordMetric(
+      "host_capability:persists-system-content",
+      1,
+      probe.sessionId ?? void 0
+    );
+    return;
+  }
+  const hasSystemRole = /^system:/m.test(transcript);
+  if (hasSystemRole) {
+    probe.lastLandsValue = "observable-absent";
+    probe.sentinelChecked = true;
+    probe.hostPersistsSystemContent = true;
+    await store.recordMetric(
+      "hook_lands:experimental.chat.system.transform",
+      0,
+      probe.sessionId ?? void 0
+    );
+    await store.recordMetric(
+      "host_capability:persists-system-content",
+      1,
+      probe.sessionId ?? void 0
+    );
+    return;
+  }
+  probe.lastLandsValue = "unverifiable";
+  probe.sentinelChecked = true;
+  if (probe.hostPersistsSystemContent === null) {
+    probe.hostPersistsSystemContent = false;
+  }
+  await store.recordMetric(
+    "hook_lands:experimental.chat.system.transform",
+    -1,
+    probe.sessionId ?? void 0
+  );
+  await store.recordMetric(
+    "host_capability:persists-system-content",
+    0,
+    probe.sessionId ?? void 0
+  );
 }
 
 // src/summarize.ts
@@ -2245,8 +2416,11 @@ async function realmemoryPlugin(ctx) {
     recentUserTexts: [],
     lastToolCapture: null,
     lastInjectedMemoryIds: null,
-    deltaTurnDone: false
+    deltaTurnDone: false,
+    probe: createProbeState(),
+    sessionId: null
   };
+  state.probe.hostVersion = resolveHostVersion(ctx);
   async function getStore() {
     if (state.initialized) return state.store;
     if (!state.initPromise) {
@@ -2278,6 +2452,12 @@ async function realmemoryPlugin(ctx) {
       event
     }) => {
       if (event.type === "session.created") {
+        const sid = event?.properties?.sessionID;
+        if (sid) {
+          resetProbeForSession(state.probe, sid);
+          state.sessionId = sid;
+        }
+        recordHookFired(getStore, state.probe, "event:session.created");
         try {
           const store = await getStore();
           const queryText = `Project at ${ctx.directory}`;
@@ -2314,6 +2494,24 @@ async function realmemoryPlugin(ctx) {
         );
       }
       if (event.type === "session.idle") {
+        recordHookFired(getStore, state.probe, "event:session.idle");
+        if (state.probe.sentinelToken && !state.probe.sentinelChecked) {
+          const idleSid = event?.properties?.sessionID;
+          if (idleSid) {
+            void (async () => {
+              try {
+                const store = await getStore();
+                await checkSentinelLanded(
+                  store,
+                  state.probe,
+                  () => fetchSessionTranscript(ctx, idleSid)
+                );
+              } catch {
+              }
+            })().catch(() => {
+            });
+          }
+        }
         if (state.config.brainLoop !== false) {
           if (state.deltaTurnDone) {
             state.deltaTurnDone = false;
@@ -2401,6 +2599,7 @@ async function realmemoryPlugin(ctx) {
     // init + write) runs on a detached promise, so a slow write never blocks
     // the tool loop. Errors are logged, never thrown out of the handler.
     "tool.execute.after": (input, output) => {
+      recordHookFired(getStore, state.probe, "tool.execute.after");
       const captureConfig = state.config;
       if (captureConfig?.autoCapture === false) return;
       void (async () => {
@@ -2477,6 +2676,7 @@ async function realmemoryPlugin(ctx) {
     // `injectedMemoryIds`, so a memory delivered earlier (session start or a
     // previous message) is not staged a second time.
     "chat.message": (_input, output) => {
+      recordHookFired(getStore, state.probe, "chat.message");
       if (output?.message?.role !== "user") return;
       const content = extractUserText(output?.parts ?? []);
       if (!content) return;
@@ -2524,6 +2724,11 @@ async function realmemoryPlugin(ctx) {
     // `session.created` or `chat.message` is appended to the system prompt
     // here — and cleared so it is never injected twice.
     "experimental.chat.system.transform": (_input, output) => {
+      recordHookFired(getStore, state.probe, "experimental.chat.system.transform");
+      const r = pushSentinel(state.probe, output);
+      if (r.pushed && !r.assertionOk) {
+        recordLandsOutcome(getStore, state.probe, 0);
+      }
       if (!state.pendingInjection) return;
       if (!Array.isArray(output?.system)) {
         state.pendingInjection = null;
@@ -2539,6 +2744,7 @@ async function realmemoryPlugin(ctx) {
     // store work runs on a detached promise and any failure is logged, never
     // thrown out of the handler or the compaction flow.
     "experimental.session.compacting": () => {
+      recordHookFired(getStore, state.probe, "experimental.session.compacting");
       void (async () => {
         try {
           const store = await getStore();

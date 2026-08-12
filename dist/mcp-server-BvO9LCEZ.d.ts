@@ -243,6 +243,28 @@ declare class MemoryStore {
         latest_at: string;
     }>>;
     /**
+     * Return the single most-recent metrics row (by recorded_at) whose
+     * metric_name matches the given prefix (LIKE 'prefix%'). Returns null if no
+     * row matches. Additive: no schema change, no existing method signature
+     * change. Used by --doctor to read the latest hook_lands outcome value and
+     * the latest session_id (both unreachable via getMetricSummary, whose
+     * `latest` field is MAX(metric_value) and returns no session_id).
+     *
+     * (Synthetic-brain Phase 0 — resolves plan comments 2-C1 + 2-C4.)
+     */
+    getLatestMetricRow(prefix: string): Promise<{
+        metric_name: string;
+        metric_value: number;
+        session_id: string | null;
+        recorded_at: string;
+    } | null>;
+    /**
+     * Count active memories in the store. Additive — used by the doctor report
+     * to determine if sessions have run (memories present = sessions happened).
+     * (Synthetic-brain Phase 0.)
+     */
+    count(): Promise<number>;
+    /**
      * Bloat ratio: fraction of active memories with weight below
      * archiveThreshold. 0.0 on an empty store.
      */

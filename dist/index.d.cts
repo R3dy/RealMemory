@@ -1,7 +1,7 @@
 import { MemoryStoreConfig, Memory, RecallQuery, RecallResult } from './types.cjs';
 export { ForgetResult, ListQuery, ListResult, MemoryCategory, MemoryMetadata, MemoryScope, MemorySource, MemoryType, MemoryWithRelations, Relationship, RelationshipEdge, RelationshipInput, RelationshipType, SearchQuery, SearchResult, StoreInput, SummaryProviderConfig, UpdatePatch } from './types.cjs';
-import { M as MemoryStore } from './mcp-server-NginMSJt.cjs';
-export { a as McpToolHandler, c as createMcpTools, s as startMcpServer } from './mcp-server-NginMSJt.cjs';
+import { M as MemoryStore } from './mcp-server-DHCepnNL.cjs';
+export { a as McpToolHandler, c as createMcpTools, s as startMcpServer } from './mcp-server-DHCepnNL.cjs';
 import '@modelcontextprotocol/sdk/types.js';
 
 /** Thrown when a feature is referenced but not yet implemented. */
@@ -215,6 +215,6 @@ declare function dynamicLimit(intent: Intent): number;
 declare function evaluateDelta(store: MemoryStore, state: BrainLoopState, userText: string, assistantText: string): Promise<void>;
 
 /** Semver version of the realmemory package. */
-declare const VERSION = "0.1.1";
+declare const VERSION = "0.6.0";
 
 export { type BrainLoopState, DuplicateRelationshipError, type EmbeddingProvider, type Intent, InvalidConfidenceError, InvalidTypeError, Memory, MemoryNotFoundError, MemoryStore, MemoryStoreConfig, MemoryStoreError, NotImplementedError, RecallEngine, RecallQuery, RecallResult, SelfRelationshipError, type ToolCapture, VERSION, classifyIntent, computeFrequencyFactor, computeRecencyFactor, computeWeight, cosineSimilarity, createEmbeddingProvider, deriveProjectId, dynamicLimit, embeddingFromBuffer, embeddingToBuffer, evaluateDelta, isHighSignal, loadConfig, scrubSecrets, validateConfig };

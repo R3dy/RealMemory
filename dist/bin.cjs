@@ -1760,6 +1760,33 @@ var MemoryStore = class {
     });
   }
   /**
+   * Return the single most-recent metrics row (by recorded_at) whose
+   * metric_name matches the given prefix (LIKE 'prefix%'). Returns null if no
+   * row matches. Additive: no schema change, no existing method signature
+   * change. Used by --doctor to read the latest hook_lands outcome value and
+   * the latest session_id (both unreachable via getMetricSummary, whose
+   * `latest` field is MAX(metric_value) and returns no session_id).
+   *
+   * (Synthetic-brain Phase 0 — resolves plan comments 2-C1 + 2-C4.)
+   */
+  async getLatestMetricRow(prefix) {
+    if (!this.db) return null;
+    const row = this.db.prepare(
+      "SELECT metric_name, metric_value, session_id, recorded_at FROM metrics WHERE metric_name LIKE ? ORDER BY recorded_at DESC LIMIT 1"
+    ).get(`${prefix}%`);
+    return row ?? null;
+  }
+  /**
+   * Count active memories in the store. Additive — used by the doctor report
+   * to determine if sessions have run (memories present = sessions happened).
+   * (Synthetic-brain Phase 0.)
+   */
+  async count() {
+    if (!this.db) return 0;
+    const row = this.db.prepare("SELECT COUNT(*) as c FROM memories WHERE status = 'active'").get();
+    return row.c;
+  }
+  /**
    * Bloat ratio: fraction of active memories with weight below
    * archiveThreshold. 0.0 on an empty store.
    */
@@ -3514,11 +3541,218 @@ async function startMcpServer(config, opts) {
   }
 }
 
+// src/hook-probe.ts
+var ALWAYS_FIRE_HOOKS = [
+  "event:session.created",
+  "event:session.idle",
+  "chat.message",
+  "experimental.chat.system.transform"
+];
+var CONDITIONAL_HOOKS = [
+  "tool.execute.after",
+  "experimental.session.compacting"
+];
+var PROBED_HOOKS = [...ALWAYS_FIRE_HOOKS, ...CONDITIONAL_HOOKS];
+var TRANSFORM_HOOK = "experimental.chat.system.transform";
+var FALLBACK_NOTICE = `DEGRADED: experimental.chat.system.transform fires and output.system is
+observable in the transcript, but the sentinel did not land. The hook's
+mutation is being dropped downstream.
+Fallback delivery path:
+  1. Ensure the realmemory MCP server is registered in your OpenCode config
+     (it exposes the \`recall\` and \`store_memory\` tools \u2014 the agent can call
+     them directly, bypassing the transform hook).
+  2. Add this line to your project's AGENTS.md (or the mission-control
+     MEMORY.md convention):
+
+       At session start and before any non-trivial task, call the realmemory
+       \`recall\` tool with the project path as the query, and act on the
+       returned memories.
+
+  3. Re-run \`realmemory-mcp --doctor\` after a host upgrade to re-check.`;
+var UNVERIFIABLE_NOTICE = `UNVERIFIABLE: this host does not persist system-prompt content in the session
+transcript (only user/assistant messages are stored \u2014 recorded as
+host_capability:persists-system-content=0). The probe can prove the hook FIRED
+and that output.system was MUTATED, but cannot prove the mutation reached the
+LLM's context. To verify landing manually: trigger a realmemory recall, then
+ask the agent whether it sees the recalled memory in its context. A Phase-1+
+mechanism (sentinel-echo: instruct the model to echo the probe token in its
+first reply) would make landing observable on this host.`;
+var FETCH_FAILED_NOTICE = `FETCH-FAILED: the transform hook fired and a sentinel was pushed, but the
+session.idle transcript fetch returned no data (the client was unavailable
+or the transcript was too thin). Landing could not be evaluated. Re-run
+\`realmemory-mcp --doctor\` after another session.`;
+async function getDoctorReport(store) {
+  const summary = await store.getMetricSummary();
+  if (summary.length === 0) {
+    const rows2 = PROBED_HOOKS.map((hook) => ({
+      hook,
+      conditional: CONDITIONAL_HOOKS.includes(hook),
+      fires: "no",
+      fireCount: 0,
+      lastSeen: null,
+      lands: hook === TRANSFORM_HOOK ? "unverified" : "na",
+      hostVersion: null,
+      degraded: false
+    }));
+    return {
+      rows: rows2,
+      degraded: false,
+      inconclusive: true,
+      fallbackNotice: null,
+      unverifiableNotice: null,
+      fetchFailedNotice: null
+    };
+  }
+  const fireCounts = /* @__PURE__ */ new Map();
+  for (const row of summary) {
+    if (row.metric_name.startsWith("hook_fired:")) {
+      fireCounts.set(row.metric_name, { count: row.count, latestAt: row.latest_at });
+    }
+  }
+  const landsRow = await store.getLatestMetricRow("hook_lands:");
+  let lands = "unverified";
+  if (landsRow) {
+    const v = landsRow.metric_value;
+    if (v === 1) lands = "yes";
+    else if (v === 0) lands = "no";
+    else if (v === -1) lands = "unverifiable";
+    else if (v === -2) lands = "fetch-failed";
+  }
+  const versionRow = await store.getLatestMetricRow("host_version:");
+  const hostVersion = versionRow ? versionRow.metric_name.replace("host_version:", "") : null;
+  const hasAlwaysFireEvidence = ALWAYS_FIRE_HOOKS.some(
+    (h) => (fireCounts.get(`hook_fired:${h}`)?.count ?? 0) > 0
+  );
+  const rows = PROBED_HOOKS.map((hook) => {
+    const isConditional = CONDITIONAL_HOOKS.includes(hook);
+    const fc = fireCounts.get(`hook_fired:${hook}`);
+    const count = fc?.count ?? 0;
+    const lastSeen = fc?.latestAt || null;
+    let fires;
+    if (count > 0) {
+      fires = "yes";
+    } else if (isConditional) {
+      fires = "no-evidence";
+    } else {
+      fires = "no";
+    }
+    const hookLands = hook === TRANSFORM_HOOK ? lands : "na";
+    const degraded2 = hook === TRANSFORM_HOOK && lands === "no";
+    return {
+      hook,
+      conditional: isConditional,
+      fires,
+      fireCount: count,
+      lastSeen,
+      lands: hookLands,
+      hostVersion,
+      degraded: degraded2
+    };
+  });
+  const transformDegraded = lands === "no";
+  const alwaysFireSilent = !hasAlwaysFireEvidence && summary.some(
+    (r) => !r.metric_name.startsWith("hook_fired:") && !r.metric_name.startsWith("host_version:")
+  );
+  const sessionEvidenceMetrics = summary.filter(
+    (r) => !r.metric_name.startsWith("hook_fired:") && !r.metric_name.startsWith("host_version:") && !r.metric_name.startsWith("hook_lands:") && !r.metric_name.startsWith("host_capability:")
+  );
+  const memCount = await store.count();
+  const hasSessionEvidence = sessionEvidenceMetrics.length > 0 || memCount > 0;
+  const silentAlwaysFire = ALWAYS_FIRE_HOOKS.some(
+    (h) => (fireCounts.get(`hook_fired:${h}`)?.count ?? 0) === 0
+  );
+  const zeroFiresDegraded = hasSessionEvidence && silentAlwaysFire;
+  const degraded = transformDegraded || zeroFiresDegraded;
+  return {
+    rows,
+    degraded,
+    inconclusive: false,
+    fallbackNotice: transformDegraded ? FALLBACK_NOTICE : null,
+    unverifiableNotice: lands === "unverifiable" ? UNVERIFIABLE_NOTICE : null,
+    fetchFailedNotice: lands === "fetch-failed" ? FETCH_FAILED_NOTICE : null
+  };
+}
+async function printDoctorTable(store, stdout = process.stdout) {
+  const report = await getDoctorReport(store);
+  const versionRow = await store.getLatestMetricRow("host_version:");
+  const hostVersion = versionRow ? versionRow.metric_name.replace("host_version:", "") : "unknown";
+  const sessionRow = await store.getLatestMetricRow("hook_fired:");
+  const sessionId = sessionRow?.session_id ?? "none";
+  stdout.write("realmemory doctor \u2014 hook probe report\n");
+  stdout.write(`host version: ${hostVersion}
+`);
+  stdout.write(`session: ${sessionId}
+
+`);
+  stdout.write(
+    "hook                                          fires        count   last-seen             lands\n"
+  );
+  for (const row of report.rows) {
+    const hookPad = row.hook.padEnd(44);
+    const firesStr = row.fires.padEnd(12);
+    const countStr = String(row.fireCount).padEnd(7);
+    const lastSeen = row.lastSeen ?? "\u2014";
+    const lastSeenPad = lastSeen.padEnd(21);
+    const landsStr = row.lands;
+    stdout.write(`${hookPad} ${firesStr} ${countStr} ${lastSeenPad} ${landsStr}
+`);
+  }
+  stdout.write("\n");
+  if (report.inconclusive) {
+    stdout.write(
+      "NO DATA \u2014 no metric rows found. Run at least one real session with the\n"
+    );
+    stdout.write(
+      "realmemory plugin loaded, then re-run `realmemory-mcp --doctor`.\n"
+    );
+    return 3;
+  }
+  if (report.fallbackNotice) {
+    stdout.write(report.fallbackNotice + "\n");
+  }
+  if (report.unverifiableNotice) {
+    stdout.write(report.unverifiableNotice + "\n");
+  }
+  if (report.fetchFailedNotice) {
+    stdout.write(report.fetchFailedNotice + "\n");
+  }
+  if (report.degraded && !report.fallbackNotice) {
+    const silentHooks = report.rows.filter((r) => r.fires === "no" && !r.conditional).map((r) => r.hook);
+    if (silentHooks.length > 0) {
+      stdout.write(
+        `
+DEGRADED: the following always-fire hooks registered 0 fires despite
+`
+      );
+      stdout.write(
+        `evidence of real sessions (${silentHooks.length} of ${ALWAYS_FIRE_HOOKS.length}):
+`
+      );
+      for (const h of silentHooks) {
+        stdout.write(`  - ${h}
+`);
+      }
+      stdout.write(
+        "The host is silently discarding these hook keys \u2014 the issue-#28 failure mode.\n"
+      );
+      stdout.write(
+        'Fallback delivery path: "these hooks are not firing \u2014 file an issue or\n'
+      );
+      stdout.write(
+        're-run `realmemory-mcp --doctor` after a session with the instrumented plugin."\n'
+      );
+    }
+  }
+  if (report.degraded) return 2;
+  return 0;
+}
+
 // src/bin.ts
 function parseArgs(argv) {
   let ui2 = false;
   let port2 = 9333;
   let noBrowser2 = false;
+  let doctor2 = false;
   for (const a of argv.slice(2)) {
     if (a === "--ui") {
       ui2 = true;
@@ -3531,12 +3765,29 @@ function parseArgs(argv) {
       if (!Number.isNaN(p)) port2 = p;
     } else if (a === "--no-browser") {
       noBrowser2 = true;
+    } else if (a === "--doctor") {
+      doctor2 = true;
     }
   }
-  return { ui: ui2, port: port2, noBrowser: noBrowser2 };
+  return { ui: ui2, port: port2, noBrowser: noBrowser2, doctor: doctor2 };
 }
-var { ui, port, noBrowser } = parseArgs(process.argv);
-if (ui) {
+var { ui, port, noBrowser, doctor } = parseArgs(process.argv);
+if (doctor) {
+  let exitCode = 0;
+  const config = loadConfig();
+  const store = new MemoryStore(config);
+  store.init().then(() => printDoctorTable(store)).then((code) => {
+    exitCode = code;
+    return store.close();
+  }).then(() => {
+    process.exit(exitCode);
+  }).catch((err) => {
+    console.error(
+      `realmemory doctor: ${err instanceof Error ? err.message : String(err)}`
+    );
+    process.exit(1);
+  });
+} else if (ui) {
   const config = loadConfig();
   const store = new MemoryStore(config);
   store.init().then(() => startBrowserServer(store, { port })).catch((err) => {

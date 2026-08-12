@@ -1,4 +1,13 @@
 import {
+  checkSentinelLanded,
+  createProbeState,
+  pushSentinel,
+  recordHookFired,
+  recordLandsOutcome,
+  resetProbeForSession,
+  resolveHostVersion
+} from "./chunk-RBTOZFHM.js";
+import {
   classifyIntent,
   deriveProjectId,
   dynamicLimit,
@@ -7,7 +16,7 @@ import {
 import {
   MemoryStore,
   loadConfig
-} from "./chunk-YZZXWFGR.js";
+} from "./chunk-2IP5VBRF.js";
 
 // src/summarize.ts
 var VALID_TYPES = /* @__PURE__ */ new Set([
@@ -277,8 +286,11 @@ async function realmemoryPlugin(ctx) {
     recentUserTexts: [],
     lastToolCapture: null,
     lastInjectedMemoryIds: null,
-    deltaTurnDone: false
+    deltaTurnDone: false,
+    probe: createProbeState(),
+    sessionId: null
   };
+  state.probe.hostVersion = resolveHostVersion(ctx);
   async function getStore() {
     if (state.initialized) return state.store;
     if (!state.initPromise) {
@@ -310,6 +322,12 @@ async function realmemoryPlugin(ctx) {
       event
     }) => {
       if (event.type === "session.created") {
+        const sid = event?.properties?.sessionID;
+        if (sid) {
+          resetProbeForSession(state.probe, sid);
+          state.sessionId = sid;
+        }
+        recordHookFired(getStore, state.probe, "event:session.created");
         try {
           const store = await getStore();
           const queryText = `Project at ${ctx.directory}`;
@@ -346,6 +364,24 @@ async function realmemoryPlugin(ctx) {
         );
       }
       if (event.type === "session.idle") {
+        recordHookFired(getStore, state.probe, "event:session.idle");
+        if (state.probe.sentinelToken && !state.probe.sentinelChecked) {
+          const idleSid = event?.properties?.sessionID;
+          if (idleSid) {
+            void (async () => {
+              try {
+                const store = await getStore();
+                await checkSentinelLanded(
+                  store,
+                  state.probe,
+                  () => fetchSessionTranscript(ctx, idleSid)
+                );
+              } catch {
+              }
+            })().catch(() => {
+            });
+          }
+        }
         if (state.config.brainLoop !== false) {
           if (state.deltaTurnDone) {
             state.deltaTurnDone = false;
@@ -433,6 +469,7 @@ async function realmemoryPlugin(ctx) {
     // init + write) runs on a detached promise, so a slow write never blocks
     // the tool loop. Errors are logged, never thrown out of the handler.
     "tool.execute.after": (input, output) => {
+      recordHookFired(getStore, state.probe, "tool.execute.after");
       const captureConfig = state.config;
       if (captureConfig?.autoCapture === false) return;
       void (async () => {
@@ -509,6 +546,7 @@ async function realmemoryPlugin(ctx) {
     // `injectedMemoryIds`, so a memory delivered earlier (session start or a
     // previous message) is not staged a second time.
     "chat.message": (_input, output) => {
+      recordHookFired(getStore, state.probe, "chat.message");
       if (output?.message?.role !== "user") return;
       const content = extractUserText(output?.parts ?? []);
       if (!content) return;
@@ -556,6 +594,11 @@ async function realmemoryPlugin(ctx) {
     // `session.created` or `chat.message` is appended to the system prompt
     // here — and cleared so it is never injected twice.
     "experimental.chat.system.transform": (_input, output) => {
+      recordHookFired(getStore, state.probe, "experimental.chat.system.transform");
+      const r = pushSentinel(state.probe, output);
+      if (r.pushed && !r.assertionOk) {
+        recordLandsOutcome(getStore, state.probe, 0);
+      }
       if (!state.pendingInjection) return;
       if (!Array.isArray(output?.system)) {
         state.pendingInjection = null;
@@ -571,6 +614,7 @@ async function realmemoryPlugin(ctx) {
     // store work runs on a detached promise and any failure is logged, never
     // thrown out of the handler or the compaction flow.
     "experimental.session.compacting": () => {
+      recordHookFired(getStore, state.probe, "experimental.session.compacting");
       void (async () => {
         try {
           const store = await getStore();

@@ -2,17 +2,21 @@
 import {
   startBrowserServer,
   startMcpServer
-} from "./chunk-ULSGSWYV.js";
+} from "./chunk-FO3VVVTN.js";
+import {
+  printDoctorTable
+} from "./chunk-RBTOZFHM.js";
 import {
   MemoryStore,
   loadConfig
-} from "./chunk-YZZXWFGR.js";
+} from "./chunk-2IP5VBRF.js";
 
 // src/bin.ts
 function parseArgs(argv) {
   let ui2 = false;
   let port2 = 9333;
   let noBrowser2 = false;
+  let doctor2 = false;
   for (const a of argv.slice(2)) {
     if (a === "--ui") {
       ui2 = true;
@@ -25,12 +29,29 @@ function parseArgs(argv) {
       if (!Number.isNaN(p)) port2 = p;
     } else if (a === "--no-browser") {
       noBrowser2 = true;
+    } else if (a === "--doctor") {
+      doctor2 = true;
     }
   }
-  return { ui: ui2, port: port2, noBrowser: noBrowser2 };
+  return { ui: ui2, port: port2, noBrowser: noBrowser2, doctor: doctor2 };
 }
-var { ui, port, noBrowser } = parseArgs(process.argv);
-if (ui) {
+var { ui, port, noBrowser, doctor } = parseArgs(process.argv);
+if (doctor) {
+  let exitCode = 0;
+  const config = loadConfig();
+  const store = new MemoryStore(config);
+  store.init().then(() => printDoctorTable(store)).then((code) => {
+    exitCode = code;
+    return store.close();
+  }).then(() => {
+    process.exit(exitCode);
+  }).catch((err) => {
+    console.error(
+      `realmemory doctor: ${err instanceof Error ? err.message : String(err)}`
+    );
+    process.exit(1);
+  });
+} else if (ui) {
   const config = loadConfig();
   const store = new MemoryStore(config);
   store.init().then(() => startBrowserServer(store, { port })).catch((err) => {
