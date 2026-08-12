@@ -215,6 +215,6 @@ declare function dynamicLimit(intent: Intent): number;
 declare function evaluateDelta(store: MemoryStore, state: BrainLoopState, userText: string, assistantText: string): Promise<void>;
 
 /** Semver version of the realmemory package. */
-declare const VERSION = "0.5.0";
+declare const VERSION = "0.1.1";
 
 export { type BrainLoopState, DuplicateRelationshipError, type EmbeddingProvider, type Intent, InvalidConfidenceError, InvalidTypeError, Memory, MemoryNotFoundError, MemoryStore, MemoryStoreConfig, MemoryStoreError, NotImplementedError, RecallEngine, RecallQuery, RecallResult, SelfRelationshipError, type ToolCapture, VERSION, classifyIntent, computeFrequencyFactor, computeRecencyFactor, computeWeight, cosineSimilarity, createEmbeddingProvider, deriveProjectId, dynamicLimit, embeddingFromBuffer, embeddingToBuffer, evaluateDelta, isHighSignal, loadConfig, scrubSecrets, validateConfig };

@@ -2,7 +2,7 @@
 import {
   startBrowserServer,
   startMcpServer
-} from "./chunk-UZMN3IDA.js";
+} from "./chunk-ULSGSWYV.js";
 import {
   MemoryStore,
   loadConfig
