@@ -8,7 +8,7 @@ describe("fresh-project smoke test", () => {
     // Import from the built output, not source — verifies the package
     // exports work against the published artifact.
     const { MemoryStore, VERSION } = await import("../dist/index.js");
-    expect(VERSION).toBe("0.3.0");
+    expect(VERSION).toBe("0.5.0");
 
     const dir = mkdtempSync(join(tmpdir(), "realmemory-smoke-"));
     const store = new MemoryStore({
@@ -33,7 +33,7 @@ describe("fresh-project smoke test", () => {
 
   it("exports the full public API surface from dist", async () => {
     const mod = await import("../dist/index.js");
-    expect(mod.VERSION).toBe("0.3.0");
+    expect(mod.VERSION).toBe("0.5.0");
     expect(typeof mod.MemoryStore).toBe("function");
     expect(typeof mod.RecallEngine).toBe("function");
     expect(typeof mod.loadConfig).toBe("function");
@@ -49,7 +49,6 @@ describe("fresh-project smoke test", () => {
     expect(typeof mod.createMcpTools).toBe("function");
     expect(typeof mod.startMcpServer).toBe("function");
     expect(typeof mod.scrubSecrets).toBe("function");
-    expect(typeof mod.realmemoryPlugin).toBe("function");
   });
 
   it("can store, relate, and recall through the dist build", async () => {

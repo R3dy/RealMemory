@@ -1,5 +1,5 @@
 /** Semver version of the realmemory package. */
-export const VERSION = "0.4.0";
+export const VERSION = "0.5.0";
 export * from "./types";
 export * from "./errors";
 export { MemoryStore } from "./store";
@@ -15,5 +15,3 @@ export type { McpToolHandler } from "./mcp-server";
 export { scrubSecrets } from "./scrub";
 export { classifyIntent, isHighSignal, dynamicLimit, evaluateDelta } from "./brain-loop";
 export type { Intent, ToolCapture, BrainLoopState } from "./brain-loop";
-export { default as realmemoryPlugin } from "./plugin";
-export type { OpenCodePluginContext } from "./plugin";
