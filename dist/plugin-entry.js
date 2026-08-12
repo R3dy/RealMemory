@@ -591,7 +591,10 @@ async function realmemoryPlugin(ctx) {
 }
 
 // src/plugin-entry.ts
-var pluginModule = { server: realmemoryPlugin };
+var pluginModule = {
+  id: "realmemory",
+  server: realmemoryPlugin
+};
 var plugin_entry_default = pluginModule;
 export {
   plugin_entry_default as default
