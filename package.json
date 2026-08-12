@@ -1,6 +1,6 @@
 {
   "name": "realmemory",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "type": "module",
   "license": "MIT",
   "description": "An OpenCode plugin that gives AI agents real persistent memory — a weighted, indexed database that stores what agents learn across sessions and recalls it automatically.",
@@ -27,6 +27,7 @@
   "bin": {
     "realmemory-mcp": "dist/bin.js"
   },
+  "main": "dist/index.js",
   "exports": {
     ".": {
       "import": "./dist/index.js",
@@ -37,6 +38,11 @@
       "import": "./dist/types.js",
       "require": "./dist/types.cjs",
       "types": "./dist/types.d.ts"
+    },
+    "./server": {
+      "import": "./dist/plugin-entry.js",
+      "require": "./dist/plugin-entry.cjs",
+      "types": "./dist/plugin-entry.d.ts"
     }
   },
   "files": [
