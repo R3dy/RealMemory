@@ -449,6 +449,9 @@ function validateConfig(config) {
   if (config.brainLoop !== void 0 && typeof config.brainLoop !== "boolean") {
     throw new Error("brainLoop must be a boolean");
   }
+  if (config.brain?.predictionError !== void 0 && typeof config.brain.predictionError !== "boolean") {
+    throw new Error("brain.predictionError must be a boolean");
+  }
 }
 function readJsonFile(path) {
   const content = (0, import_node_fs.readFileSync)(path, "utf-8");
@@ -2237,6 +2240,99 @@ function matchCall(cache, call) {
   }
   return null;
 }
+function addRule(cache, rule) {
+  cache.rules.push(rule);
+  cache.rules.sort(
+    (a, b) => b.salience * b.confidence - a.salience * a.confidence
+  );
+  if (cache.rules.length > REFLEX_RULE_CAP) {
+    cache.rules.length = REFLEX_RULE_CAP;
+  }
+}
+
+// src/predict.ts
+function predictOutcome(matchedRule) {
+  if (matchedRule) {
+    return {
+      willSucceed: false,
+      confidence: matchedRule.confidence,
+      sourceMemoryId: matchedRule.memoryId
+    };
+  }
+  return {
+    willSucceed: true,
+    confidence: 0.5,
+    sourceMemoryId: null
+  };
+}
+function classifyOutcome(tool, output, isErrorResult2) {
+  if (tool === "bash") {
+    return { success: !isErrorResult2(String(output ?? "")) };
+  }
+  if (output instanceof Error) {
+    return { success: false };
+  }
+  if (typeof output === "string" && /error:/i.test(output)) {
+    return { success: false };
+  }
+  return { success: true };
+}
+function computeSurprise(prediction, actual) {
+  const expected = prediction.willSucceed ? prediction.confidence : 1 - prediction.confidence;
+  const actualValue = actual.success ? 1 : 0;
+  return Math.abs(actualValue - expected);
+}
+function shouldEncode(surprise) {
+  return surprise >= 0.2;
+}
+function surpriseBin(surprise) {
+  if (surprise < 0.2) return "low";
+  if (surprise > 0.7) return "high";
+  return "med";
+}
+function describe(call, actual) {
+  const args = call.args ?? {};
+  const detail = args.command ?? args.filePath ?? "";
+  const detailTrunc = detail.slice(0, 200);
+  const expected = actual.success ? "success" : "failure";
+  const observed = actual.success ? "success" : "error";
+  const suffix = detailTrunc ? ` \u2014 ${detailTrunc}` : "";
+  return `Prediction error (${call.tool}): expected ${expected}, observed ${observed}${suffix}`;
+}
+function hashArgs(args) {
+  if (!args || typeof args !== "object") return "";
+  try {
+    const stable = JSON.stringify(sortKeys(args));
+    return stable.slice(0, 200);
+  } catch {
+    return "";
+  }
+}
+function sortKeys(value) {
+  if (Array.isArray(value)) {
+    return value.map(sortKeys);
+  }
+  if (value && typeof value === "object") {
+    const sorted = {};
+    for (const key of Object.keys(value).sort()) {
+      sorted[key] = sortKeys(value[key]);
+    }
+    return sorted;
+  }
+  return value;
+}
+function consumePrediction(pending, tool, args) {
+  const fullPrefix = `${tool}:${hashArgs(args)}:`;
+  const toolPrefix = `${tool}:`;
+  const keys = Array.from(pending.keys()).reverse();
+  for (const key of keys) {
+    if (key.startsWith(fullPrefix)) return key;
+  }
+  for (const key of keys) {
+    if (key.startsWith(toolPrefix)) return key;
+  }
+  return null;
+}
 
 // src/summarize.ts
 var VALID_TYPES2 = /* @__PURE__ */ new Set([
@@ -2510,7 +2606,10 @@ async function realmemoryPlugin(ctx) {
     probe: createProbeState(),
     sessionId: null,
     reflexCache: emptyReflexCache(),
-    pendingWarnNote: null
+    pendingWarnNote: null,
+    pendingPredictions: /* @__PURE__ */ new Map(),
+    predictionCounter: 0,
+    lastPredictionOutcome: null
   };
   state.probe.hostVersion = resolveHostVersion(ctx);
   async function getStore() {
@@ -2601,6 +2700,8 @@ async function realmemoryPlugin(ctx) {
       }
       if (event.type === "session.idle") {
         recordHookFired(getStore, state.probe, "event:session.idle");
+        state.pendingPredictions.clear();
+        state.lastPredictionOutcome = null;
         if (state.probe.sentinelToken && !state.probe.sentinelChecked) {
           const idleSid = event?.properties?.sessionID;
           if (idleSid) {
@@ -2705,99 +2806,168 @@ async function realmemoryPlugin(ctx) {
     // On match: queues a warn note into pendingWarnNote (separate from
     // pendingInjection to avoid the race where chat.message's detached recall
     // overwrites pendingInjection). The transform hook delivers both.
+    //
+    // Synthetic-brain Phase 2: predict + stash. Runs for BOTH match and
+    // no-match calls (the uncertain default is the issue's headline behavior).
+    // Gated ONLY on brain.predictionError !== false, independent of the
+    // reflex/inhibition gates — a user who turns off warn notes still gets
+    // prediction-error learning.
     "tool.execute.before": (input, output) => {
       recordHookFired(getStore, state.probe, "tool.execute.before");
       const brainConfig = state.config;
-      if (brainConfig.brain?.reflex === false) return;
-      if (brainConfig.brain?.inhibition === "off") return;
       const cache = state.reflexCache;
-      if (!cache || cache.rules.length === 0) return;
-      const call = { tool: input.tool, args: input.args ?? output.args };
-      const rule = matchCall(cache, call);
-      if (!rule) return;
-      state.pendingWarnNote = `[realmemory reflex] ${rule.note}`;
-      void (async () => {
-        try {
-          const store = await getStore();
-          await store.recordMetric(
-            `reflex_fire:${rule.memoryId}`,
-            1,
-            state.sessionId ?? void 0
-          );
-        } catch {
-        }
-      })();
+      const rule = cache && cache.rules.length > 0 ? matchCall(cache, { tool: input.tool, args: input.args ?? output.args }) : null;
+      if (brainConfig.brain?.reflex !== false && brainConfig.brain?.inhibition !== "off" && rule != null) {
+        state.pendingWarnNote = `[realmemory reflex] ${rule.note}`;
+        void (async () => {
+          try {
+            const store = await getStore();
+            await store.recordMetric(
+              `reflex_fire:${rule.memoryId}`,
+              1,
+              state.sessionId ?? void 0
+            );
+          } catch {
+          }
+        })();
+      }
+      if (brainConfig.brain?.predictionError !== false) {
+        const prediction = predictOutcome(rule);
+        const callId = `${input.tool}:${hashArgs(input.args ?? output.args)}:${state.predictionCounter++}`;
+        state.pendingPredictions.set(callId, prediction);
+      }
     },
-    // On tool execution: auto-capture learnings (if enabled, default true).
+    // On tool execution: auto-capture learnings (if enabled, default true) +
+    // synthetic-brain Phase 2: prediction error (surprise-driven encoding).
     // Non-blocking: the handler resolves immediately and all store work (DB
     // init + write) runs on a detached promise, so a slow write never blocks
     // the tool loop. Errors are logged, never thrown out of the handler.
     "tool.execute.after": (input, output) => {
       recordHookFired(getStore, state.probe, "tool.execute.after");
       const captureConfig = state.config;
-      if (captureConfig?.autoCapture === false) return;
+      const brainConfig = state.config;
+      if (captureConfig?.autoCapture === false && brainConfig.brain?.predictionError === false)
+        return;
       void (async () => {
         try {
           const store = await getStore();
           const args = input?.args ?? output?.args ?? {};
-          if (input.tool === "read") {
-            const filePath = args?.filePath || "";
-            if (isConfigOrSchemaFile(filePath)) {
-              const stored = await store.store({
-                content: `Read ${filePath}`,
-                type: "codebase_fact",
-                scope: "project",
-                confidence: 0.3,
-                tags: ["auto-captured", "file-read"],
-                metadata: { source: "tool.execute.after", tool: "read", filePath }
-              });
-              if (state.config.autoRelate !== false) {
-                void store.maybeRelate(stored.id, stored.content, stored.type).catch(() => {
+          if (captureConfig?.autoCapture !== false) {
+            if (input.tool === "read") {
+              const filePath = args?.filePath || "";
+              if (isConfigOrSchemaFile(filePath)) {
+                const stored = await store.store({
+                  content: `Read ${filePath}`,
+                  type: "codebase_fact",
+                  scope: "project",
+                  confidence: 0.3,
+                  tags: ["auto-captured", "file-read"],
+                  metadata: { source: "tool.execute.after", tool: "read", filePath }
                 });
+                if (state.config.autoRelate !== false) {
+                  void store.maybeRelate(stored.id, stored.content, stored.type).catch(() => {
+                  });
+                }
+                await log("debug", `Auto-captured codebase_fact for ${filePath}`);
+                state.lastToolCapture = {
+                  tool: input.tool,
+                  filePath,
+                  isError: isErrorResult(String(output?.output ?? "")),
+                  timestamp: Date.now()
+                };
               }
-              await log("debug", `Auto-captured codebase_fact for ${filePath}`);
-              state.lastToolCapture = {
-                tool: input.tool,
-                filePath,
-                isError: isErrorResult(String(output?.output ?? "")),
-                timestamp: Date.now()
-              };
+            }
+            if (input.tool === "bash") {
+              const command = args?.command || "";
+              const result = String(output?.output ?? "");
+              if (isErrorResult(result)) {
+                const stored = await store.store({
+                  content: `Command failed: ${command.slice(0, 200)} \u2192 ${result.slice(0, 200)}`,
+                  type: "lesson_learned",
+                  scope: "project",
+                  confidence: 0.4,
+                  tags: ["auto-captured", "bash-error"],
+                  metadata: {
+                    source: "tool.execute.after",
+                    tool: "bash",
+                    command,
+                    severity: "medium"
+                  }
+                });
+                if (state.config.autoRelate !== false) {
+                  void store.maybeRelate(stored.id, stored.content, stored.type).catch(() => {
+                  });
+                }
+                await log("debug", "Auto-captured lesson_learned from bash error");
+                state.lastToolCapture = {
+                  tool: input.tool,
+                  command,
+                  isError: isErrorResult(result),
+                  timestamp: Date.now()
+                };
+              }
             }
           }
-          if (input.tool === "bash") {
-            const command = args?.command || "";
-            const result = String(output?.output ?? "");
-            if (isErrorResult(result)) {
-              const stored = await store.store({
-                content: `Command failed: ${command.slice(0, 200)} \u2192 ${result.slice(0, 200)}`,
-                type: "lesson_learned",
-                scope: "project",
-                confidence: 0.4,
-                tags: ["auto-captured", "bash-error"],
-                metadata: {
-                  source: "tool.execute.after",
-                  tool: "bash",
-                  command,
-                  severity: "medium"
+          if (brainConfig.brain?.predictionError !== false) {
+            const callId = consumePrediction(
+              state.pendingPredictions,
+              input.tool,
+              input.args ?? output?.args
+            );
+            if (callId) {
+              const prediction = state.pendingPredictions.get(callId);
+              state.pendingPredictions.delete(callId);
+              const actual = classifyOutcome(input.tool, output?.output, isErrorResult);
+              const surprise = computeSurprise(prediction, actual);
+              const bin = surpriseBin(surprise);
+              await store.recordMetric(
+                `prediction_error:${bin}`,
+                1,
+                state.sessionId ?? void 0
+              );
+              let encodedMemoryId = null;
+              if (shouldEncode(surprise)) {
+                const m = await store.store({
+                  content: describe({ tool: input.tool, args }, actual),
+                  type: "lesson_learned",
+                  scope: "project",
+                  confidence: 0.4 + 0.4 * surprise,
+                  tags: ["prediction-error"],
+                  metadata: {
+                    surprise,
+                    predicted: prediction,
+                    source: "prediction-error",
+                    tool: input.tool,
+                    command: args?.command ?? null,
+                    filePath: args?.filePath ?? null
+                  }
+                });
+                encodedMemoryId = m.id;
+                if (state.config.autoRelate !== false) {
+                  void store.maybeRelate(m.id, m.content, m.type).catch(() => {
+                  });
                 }
-              });
-              if (state.config.autoRelate !== false) {
-                void store.maybeRelate(stored.id, stored.content, stored.type).catch(() => {
+                if (surprise > 0.7 && state.reflexCache) {
+                  const newRule = compileRule(m);
+                  if (newRule) addRule(state.reflexCache, newRule);
+                }
+                await log("debug", `Prediction error: encoded lesson (surprise=${surprise.toFixed(2)}, bin=${bin})`);
+              } else if (prediction.sourceMemoryId) {
+                await store.update(prediction.sourceMemoryId, { reinforce: true }).catch(() => {
                 });
               }
-              await log("debug", "Auto-captured lesson_learned from bash error");
-              state.lastToolCapture = {
-                tool: input.tool,
-                command,
-                isError: isErrorResult(result),
-                timestamp: Date.now()
+              state.lastPredictionOutcome = {
+                prediction,
+                actual,
+                surprise,
+                encodedMemoryId
               };
             }
           }
         } catch (error) {
           await log(
             "error",
-            `Auto-capture failed: ${error instanceof Error ? error.message : String(error)}`
+            `Auto-capture/prediction failed: ${error instanceof Error ? error.message : String(error)}`
           );
         }
       })();
@@ -2818,13 +2988,70 @@ async function realmemoryPlugin(ctx) {
       state.deltaTurnDone = false;
       const brainLoopEnabled = state.config.brainLoop !== false;
       let recallLimit = 3;
+      let intent = "generic";
       if (brainLoopEnabled) {
-        const intent = classifyIntent(content, "", state.recentUserTexts, state.lastToolCapture);
+        intent = classifyIntent(content, "", state.recentUserTexts, state.lastToolCapture);
         state.lastUserText = content;
         state.lastUserIntent = intent;
         recallLimit = dynamicLimit(intent);
         state.recentUserTexts.push(content);
         if (state.recentUserTexts.length > 5) state.recentUserTexts.shift();
+      }
+      const brainConfigPred = state.config;
+      if (intent === "correction" && brainConfigPred.brain?.predictionError !== false && state.lastPredictionOutcome) {
+        const outcome = state.lastPredictionOutcome;
+        state.lastPredictionOutcome = null;
+        void (async () => {
+          try {
+            const store = await getStore();
+            if (outcome.encodedMemoryId) {
+              await store.update(outcome.encodedMemoryId, {
+                reinforce: true,
+                confidence: 0.8
+                // 0.4 + 0.4 * 1.0
+              }).catch(() => {
+              });
+              await store.recordMetric(
+                "prediction_error:high",
+                1,
+                state.sessionId ?? void 0
+              );
+            } else {
+              const m = await store.store({
+                content: `User correction (max prediction error): ${content.slice(0, 200)}`,
+                type: "lesson_learned",
+                scope: "project",
+                confidence: 0.8,
+                // 0.4 + 0.4 * 1.0
+                tags: ["prediction-error", "user-correction"],
+                metadata: {
+                  surprise: 1,
+                  predicted: outcome.prediction,
+                  actual: outcome.actual,
+                  source: "prediction-error",
+                  intent: "correction"
+                }
+              });
+              void store.maybeRelate(m.id, m.content, m.type).catch(() => {
+              });
+              await store.recordMetric(
+                "prediction_error:high",
+                1,
+                state.sessionId ?? void 0
+              );
+              if (state.reflexCache) {
+                const newRule = compileRule(m);
+                if (newRule) addRule(state.reflexCache, newRule);
+              }
+            }
+            await log("debug", "Prediction error: user correction encoded at max salience");
+          } catch (error) {
+            await log(
+              "error",
+              `Prediction-error correction failed: ${error instanceof Error ? error.message : String(error)}`
+            );
+          }
+        })();
       }
       void (async () => {
         try {

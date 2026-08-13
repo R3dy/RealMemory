@@ -17,9 +17,23 @@ import {
   buildReflexCache,
   matchCall,
   emptyReflexCache,
+  addRule,
+  compileRule,
   type ReflexCache,
   type ToolCall,
 } from "./reflex";
+import {
+  predictOutcome,
+  classifyOutcome,
+  computeSurprise,
+  shouldEncode,
+  surpriseBin,
+  describe,
+  hashArgs,
+  consumePrediction,
+  type Prediction,
+  type Outcome,
+} from "./predict";
 import {
   buildSummarizationPrompt,
   callSummaryProvider,
@@ -68,6 +82,22 @@ interface PluginState {
    *  pendingInjection to avoid the race where chat.message's detached recall
    *  overwrites pendingInjection (assignment) after tool.execute.before queued a note. */
   pendingWarnNote: string | null;
+  /** Synthetic-brain Phase 2: pending predictions keyed by synthesized call ID.
+   *  Set in tool.execute.before (reflex path), consumed+deleted in tool.execute.after
+   *  (deliberative path). Swept on session.idle to prevent leaks. */
+  pendingPredictions: Map<string, Prediction>;
+  /** Monotonic counter for synthesizing call IDs (OpenCode provides none). */
+  predictionCounter: number;
+  /** Outcome of the most-recently-consumed prediction (same pattern as
+   *  lastToolCapture). Consumed by the next turn's chat.message correction
+   *  path — pendingPredictions is already empty by then because
+   *  tool.execute.after consumes within the same turn. */
+  lastPredictionOutcome: {
+    prediction: Prediction;
+    actual: Outcome;
+    surprise: number;
+    encodedMemoryId: string | null;
+  } | null;
 }
 
 /** Check if a file path looks like a config, schema, or route file worth capturing. */
@@ -252,6 +282,9 @@ export default async function realmemoryPlugin(
     sessionId: null,
     reflexCache: emptyReflexCache(),
     pendingWarnNote: null,
+    pendingPredictions: new Map(),
+    predictionCounter: 0,
+    lastPredictionOutcome: null,
   };
 
   // Resolve host version once at plugin init (Phase 0 probe).
@@ -377,6 +410,14 @@ export default async function realmemoryPlugin(
       if (event.type === "session.idle") {
         // Phase 0 probe: record fire + check sentinel landing (detached, independent of autoSummarize).
         recordHookFired(getStore, state.probe, "event:session.idle");
+
+        // Synthetic-brain Phase 2: leak prevention. Pending predictions that
+        // never got an `after` (e.g. tool was blocked, session ended mid-call)
+        // are dropped rather than accumulated. The Map is bounded in practice
+        // by the number of tool calls in a turn. lastPredictionOutcome is
+        // also cleared — it's only meaningful within one turn of the outcome.
+        state.pendingPredictions.clear();
+        state.lastPredictionOutcome = null;
         if (state.probe.sentinelToken && !state.probe.sentinelChecked) {
           const idleSid = (event as { properties?: { sessionID?: string } })?.properties?.sessionID;
           if (idleSid) {
@@ -499,6 +540,12 @@ export default async function realmemoryPlugin(
     // On match: queues a warn note into pendingWarnNote (separate from
     // pendingInjection to avoid the race where chat.message's detached recall
     // overwrites pendingInjection). The transform hook delivers both.
+    //
+    // Synthetic-brain Phase 2: predict + stash. Runs for BOTH match and
+    // no-match calls (the uncertain default is the issue's headline behavior).
+    // Gated ONLY on brain.predictionError !== false, independent of the
+    // reflex/inhibition gates — a user who turns off warn notes still gets
+    // prediction-error learning.
     "tool.execute.before": (
       input: { tool: string; args?: Record<string, unknown> },
       output: { args?: Record<string, unknown> },
@@ -506,40 +553,61 @@ export default async function realmemoryPlugin(
       // Phase 0 probe: record fire.
       recordHookFired(getStore, state.probe, "tool.execute.before");
 
-      // Config gate: brain.reflex defaults true; brain.inhibition defaults "warn".
       const brainConfig = state.config as {
-        brain?: { reflex?: boolean; inhibition?: string };
+        brain?: {
+          reflex?: boolean;
+          inhibition?: string;
+          predictionError?: boolean;
+        };
       };
-      if (brainConfig.brain?.reflex === false) return;
-      if (brainConfig.brain?.inhibition === "off") return;
 
-      // Reflex path: synchronous, cache-only, no I/O. Cold cache = no-op.
+      // C1: compute cache + rule WITHOUT the early returns that would make
+      // predictOutcome(null) dead code. Cold cache → rule = null.
       const cache = state.reflexCache;
-      if (!cache || cache.rules.length === 0) return;
+      const rule =
+        cache && cache.rules.length > 0
+          ? matchCall(cache, { tool: input.tool, args: input.args ?? output.args })
+          : null;
 
-      const call: ToolCall = { tool: input.tool, args: input.args ?? output.args };
-      const rule = matchCall(cache, call);
-      if (!rule) return;
+      // Phase 1 warn behavior — gated EXACTLY as before (reflex enabled,
+      // inhibition not "off"), AND on rule != null. Unchanged semantics;
+      // only the early returns are removed in favor of a conditional.
+      if (
+        brainConfig.brain?.reflex !== false &&
+        brainConfig.brain?.inhibition !== "off" &&
+        rule != null
+      ) {
+        // Warn: queue a one-line note into pendingWarnNote (separate field — avoids race).
+        state.pendingWarnNote = `[realmemory reflex] ${rule.note}`;
 
-      // Warn: queue a one-line note into pendingWarnNote (separate field — avoids race).
-      state.pendingWarnNote = `[realmemory reflex] ${rule.note}`;
+        // Record reflex_fire metric (detached — non-blocking, fire-and-forget).
+        void (async () => {
+          try {
+            const store = await getStore();
+            await store.recordMetric(
+              `reflex_fire:${rule.memoryId}`,
+              1,
+              state.sessionId ?? undefined,
+            );
+          } catch {
+            // Fire-safe — never throw out of the reflex path.
+          }
+        })();
+      }
 
-      // Record reflex_fire metric (detached — non-blocking, fire-and-forget).
-      void (async () => {
-        try {
-          const store = await getStore();
-          await store.recordMetric(
-            `reflex_fire:${rule.memoryId}`,
-            1,
-            state.sessionId ?? undefined,
-          );
-        } catch {
-          // Fire-safe — never throw out of the reflex path.
-        }
-      })();
+      // Phase 2: predict + stash. Reflex path — cache-only, no I/O (ADR-010).
+      // Gated ONLY on brain.predictionError !== false, so it runs for BOTH
+      // match and no-match calls. Deliberately independent of the
+      // reflex/inhibition gates.
+      if (brainConfig.brain?.predictionError !== false) {
+        const prediction = predictOutcome(rule); // null-safe — rule may be null
+        const callId = `${input.tool}:${hashArgs(input.args ?? output.args)}:${state.predictionCounter++}`;
+        state.pendingPredictions.set(callId, prediction);
+      }
     },
 
-    // On tool execution: auto-capture learnings (if enabled, default true).
+    // On tool execution: auto-capture learnings (if enabled, default true) +
+    // synthetic-brain Phase 2: prediction error (surprise-driven encoding).
     // Non-blocking: the handler resolves immediately and all store work (DB
     // init + write) runs on a detached promise, so a slow write never blocks
     // the tool loop. Errors are logged, never thrown out of the handler.
@@ -550,10 +618,20 @@ export default async function realmemoryPlugin(
       // Phase 0 probe: record fire before any config gate.
       recordHookFired(getStore, state.probe, "tool.execute.after");
 
-      // Fast no-op: when auto-capture is disabled, return BEFORE any DB touch —
-      // getStore() (and thus store init) never runs when disabled.
       const captureConfig = state.config as { autoCapture?: boolean } | null;
-      if (captureConfig?.autoCapture === false) return;
+      const brainConfig = state.config as {
+        brain?: { predictionError?: boolean };
+      };
+
+      // C2: dual-gate early return. Only short-circuit the WHOLE handler when
+      // BOTH the legacy auto-capture AND the prediction-error loop are
+      // explicitly disabled. This preserves the fast no-op when both are off,
+      // but ensures prediction-error runs even when autoCapture is false.
+      if (
+        captureConfig?.autoCapture === false &&
+        brainConfig.brain?.predictionError === false
+      )
+        return;
 
       void (async () => {
         try {
@@ -562,70 +640,152 @@ export default async function realmemoryPlugin(
           // them on `input.args`; older callers/tests used `output.args`.
           const args = input?.args ?? output?.args ?? {};
 
-          // Read tool on config/schema/route files -> codebase_fact.
-          if (input.tool === "read") {
-            const filePath = (args as { filePath?: string })?.filePath || "";
-            if (isConfigOrSchemaFile(filePath)) {
-              const stored = await store.store({
-                content: `Read ${filePath}`,
-                type: "codebase_fact",
-                scope: "project",
-                confidence: 0.3,
-                tags: ["auto-captured", "file-read"],
-                metadata: { source: "tool.execute.after", tool: "read", filePath },
-              });
-              if ((state.config as { autoRelate?: boolean }).autoRelate !== false) {
-                void store.maybeRelate(stored.id, stored.content, stored.type).catch(() => {});
+          // ----- Legacy auto-capture (Phase 1 + Epic #3) -----
+          // Gated on autoCapture !== false (its original behavior). Coexists
+          // with the prediction-error block below — both may fire on the same
+          // call (coexistence is explicit in the issue; a future phase may
+          // retire the legacy paths once prediction error proves out).
+          if (captureConfig?.autoCapture !== false) {
+            // Read tool on config/schema/route files -> codebase_fact.
+            if (input.tool === "read") {
+              const filePath = (args as { filePath?: string })?.filePath || "";
+              if (isConfigOrSchemaFile(filePath)) {
+                const stored = await store.store({
+                  content: `Read ${filePath}`,
+                  type: "codebase_fact",
+                  scope: "project",
+                  confidence: 0.3,
+                  tags: ["auto-captured", "file-read"],
+                  metadata: { source: "tool.execute.after", tool: "read", filePath },
+                });
+                if ((state.config as { autoRelate?: boolean }).autoRelate !== false) {
+                  void store.maybeRelate(stored.id, stored.content, stored.type).catch(() => {});
+                }
+                await log("debug", `Auto-captured codebase_fact for ${filePath}`);
+                // Brain-loop capture: remember the tool outcome this turn so
+                // classifyIntent can see it on the next user message.
+                state.lastToolCapture = {
+                  tool: input.tool,
+                  filePath,
+                  isError: isErrorResult(String(output?.output ?? "")),
+                  timestamp: Date.now(),
+                };
               }
-              await log("debug", `Auto-captured codebase_fact for ${filePath}`);
-              // Brain-loop capture: remember the tool outcome this turn so
-              // classifyIntent can see it on the next user message.
-              state.lastToolCapture = {
-                tool: input.tool,
-                filePath,
-                isError: isErrorResult(String(output?.output ?? "")),
-                timestamp: Date.now(),
-              };
             }
+
+            // Bash tool on errors -> lesson_learned.
+            if (input.tool === "bash") {
+              const command = (args as { command?: string })?.command || "";
+              const result = String(output?.output ?? "");
+              if (isErrorResult(result)) {
+                const stored = await store.store({
+                  content: `Command failed: ${command.slice(0, 200)} → ${result.slice(0, 200)}`,
+                  type: "lesson_learned",
+                  scope: "project",
+                  confidence: 0.4,
+                  tags: ["auto-captured", "bash-error"],
+                  metadata: {
+                    source: "tool.execute.after",
+                    tool: "bash",
+                    command,
+                    severity: "medium",
+                  },
+                });
+                if ((state.config as { autoRelate?: boolean }).autoRelate !== false) {
+                  void store.maybeRelate(stored.id, stored.content, stored.type).catch(() => {});
+                }
+                await log("debug", "Auto-captured lesson_learned from bash error");
+                // Brain-loop capture: remember the tool outcome this turn so
+                // classifyIntent can see it on the next user message.
+                state.lastToolCapture = {
+                  tool: input.tool,
+                  command,
+                  isError: isErrorResult(result),
+                  timestamp: Date.now(),
+                };
+              }
+            }
+            // Write/Edit -> no capture (too noisy).
           }
 
-          // Bash tool on errors -> lesson_learned.
-          if (input.tool === "bash") {
-            const command = (args as { command?: string })?.command || "";
-            const result = String(output?.output ?? "");
-            if (isErrorResult(result)) {
-              const stored = await store.store({
-                content: `Command failed: ${command.slice(0, 200)} → ${result.slice(0, 200)}`,
-                type: "lesson_learned",
-                scope: "project",
-                confidence: 0.4,
-                tags: ["auto-captured", "bash-error"],
-                metadata: {
-                  source: "tool.execute.after",
-                  tool: "bash",
-                  command,
-                  severity: "medium",
-                },
-              });
-              if ((state.config as { autoRelate?: boolean }).autoRelate !== false) {
-                void store.maybeRelate(stored.id, stored.content, stored.type).catch(() => {});
+          // ----- Synthetic-brain Phase 2: prediction error -----
+          // Deliberative path (detached — INV-017). Gated on
+          // brain.predictionError !== false, independent of autoCapture.
+          if (brainConfig.brain?.predictionError !== false) {
+            // C4: match the EXACT call via the full tool:argsHash: prefix.
+            // tool.execute.after receives the same args as tool.execute.before,
+            // so a full-prefix match disambiguates interleaved same-tool calls.
+            // Fall back to most-recent-for-tool only when no hash matches.
+            const callId = consumePrediction(
+              state.pendingPredictions,
+              input.tool,
+              input.args ?? output?.args,
+            );
+            if (callId) {
+              const prediction = state.pendingPredictions.get(callId)!;
+              state.pendingPredictions.delete(callId);
+              const actual = classifyOutcome(input.tool, output?.output, isErrorResult);
+              const surprise = computeSurprise(prediction, actual);
+              const bin = surpriseBin(surprise);
+              await store.recordMetric(
+                `prediction_error:${bin}`,
+                1,
+                state.sessionId ?? undefined,
+              );
+
+              let encodedMemoryId: string | null = null;
+              if (shouldEncode(surprise)) {
+                // Surprising: encode a new lesson_learned with salience
+                // proportional to surprise (§4.5).
+                const m = await store.store({
+                  content: describe({ tool: input.tool, args }, actual),
+                  type: "lesson_learned",
+                  scope: "project",
+                  confidence: 0.4 + 0.4 * surprise,
+                  tags: ["prediction-error"],
+                  metadata: {
+                    surprise,
+                    predicted: prediction,
+                    source: "prediction-error",
+                    tool: input.tool,
+                    command: (args as { command?: string })?.command ?? null,
+                    filePath: (args as { filePath?: string })?.filePath ?? null,
+                  },
+                });
+                encodedMemoryId = m.id;
+                if ((state.config as { autoRelate?: boolean }).autoRelate !== false) {
+                  void store.maybeRelate(m.id, m.content, m.type).catch(() => {});
+                }
+                // Strong surprise → immediate reflex on the next call.
+                if (surprise > 0.7 && state.reflexCache) {
+                  const newRule = compileRule(m);
+                  if (newRule) addRule(state.reflexCache, newRule);
+                }
+                await log("debug", `Prediction error: encoded lesson (surprise=${surprise.toFixed(2)}, bin=${bin})`);
+              } else if (prediction.sourceMemoryId) {
+                // Low surprise: cheaply reinforce the rule that produced the
+                // prediction (INV-018 — explicit reinforcement, no new row).
+                await store
+                  .update(prediction.sourceMemoryId, { reinforce: true })
+                  .catch(() => {});
               }
-              await log("debug", "Auto-captured lesson_learned from bash error");
-              // Brain-loop capture: remember the tool outcome this turn so
-              // classifyIntent can see it on the next user message.
-              state.lastToolCapture = {
-                tool: input.tool,
-                command,
-                isError: isErrorResult(result),
-                timestamp: Date.now(),
+
+              // C3: record the outcome for the next turn's correction path.
+              // Even when the after-hook already encoded (encodedMemoryId !=
+              // null), the correction path reinforces THAT row rather than
+              // storing a second one (double-encode avoidance).
+              state.lastPredictionOutcome = {
+                prediction,
+                actual,
+                surprise,
+                encodedMemoryId,
               };
             }
           }
-          // Write/Edit -> no capture (too noisy).
         } catch (error) {
           await log(
             "error",
-            `Auto-capture failed: ${error instanceof Error ? error.message : String(error)}`,
+            `Auto-capture/prediction failed: ${error instanceof Error ? error.message : String(error)}`,
           );
         }
       })();
@@ -658,14 +818,88 @@ export default async function realmemoryPlugin(
       // C4 fix: gate classification on brainLoop. When disabled, use fixed limit:3 (v0.3.0 behavior).
       const brainLoopEnabled = (state.config as { brainLoop?: boolean }).brainLoop !== false;
       let recallLimit = 3;
+      let intent: import("./brain-loop").Intent = "generic";
       if (brainLoopEnabled) {
-        const intent = classifyIntent(content, "", state.recentUserTexts, state.lastToolCapture);
+        intent = classifyIntent(content, "", state.recentUserTexts, state.lastToolCapture);
         state.lastUserText = content;
         state.lastUserIntent = intent;
         recallLimit = dynamicLimit(intent);
         // C4 fix: classify FIRST (check if in buffer), THEN push.
         state.recentUserTexts.push(content);
         if (state.recentUserTexts.length > 5) state.recentUserTexts.shift();
+      }
+
+      // ----- Synthetic-brain Phase 2: user correction via lastPredictionOutcome -----
+      // A user correction is by definition maximal prediction error (§4.5) —
+      // the agent's model of what the user wanted was wrong. Consume the last
+      // tool-call's prediction outcome (set by tool.execute.after on the prior
+      // turn) and force it to surprise=1.0. Coexists with evaluateDelta.
+      const brainConfigPred = state.config as {
+        brain?: { predictionError?: boolean };
+      };
+      if (
+        intent === "correction" &&
+        brainConfigPred.brain?.predictionError !== false &&
+        state.lastPredictionOutcome
+      ) {
+        const outcome = state.lastPredictionOutcome;
+        state.lastPredictionOutcome = null; // consume once
+        void (async () => {
+          try {
+            const store = await getStore();
+            if (outcome.encodedMemoryId) {
+              // C3 double-encode avoidance: the after-hook already encoded
+              // this event at surprise >= 0.2. The correction raises it to
+              // max salience — reinforce + upgrade that row rather than
+              // storing a second one (contents would differ only in the
+              // surprise field; INV-018 dedup would NOT merge them).
+              await store
+                .update(outcome.encodedMemoryId, {
+                  reinforce: true,
+                  confidence: 0.8, // 0.4 + 0.4 * 1.0
+                })
+                .catch(() => {});
+              await store.recordMetric(
+                "prediction_error:high",
+                1,
+                state.sessionId ?? undefined,
+              );
+            } else {
+              // After-hook did not encode (surprise < 0.2, or low-surprise
+              // reinforce branch). Encode the max-salience lesson now.
+              const m = await store.store({
+                content: `User correction (max prediction error): ${content.slice(0, 200)}`,
+                type: "lesson_learned",
+                scope: "project",
+                confidence: 0.8, // 0.4 + 0.4 * 1.0
+                tags: ["prediction-error", "user-correction"],
+                metadata: {
+                  surprise: 1.0,
+                  predicted: outcome.prediction,
+                  actual: outcome.actual,
+                  source: "prediction-error",
+                  intent: "correction",
+                },
+              });
+              void store.maybeRelate(m.id, m.content, m.type).catch(() => {});
+              await store.recordMetric(
+                "prediction_error:high",
+                1,
+                state.sessionId ?? undefined,
+              );
+              if (state.reflexCache) {
+                const newRule = compileRule(m);
+                if (newRule) addRule(state.reflexCache, newRule);
+              }
+            }
+            await log("debug", "Prediction error: user correction encoded at max salience");
+          } catch (error) {
+            await log(
+              "error",
+              `Prediction-error correction failed: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          }
+        })();
       }
 
       void (async () => {

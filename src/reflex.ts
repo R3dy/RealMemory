@@ -215,3 +215,28 @@ export function matchCall(cache: ReflexCache | null, call: ToolCall): ReflexRule
 
   return null;
 }
+
+/**
+ * Synthetic-brain Phase 2: mutate the cache in place to add a rule, then
+ * re-sort by `salience × confidence` desc and trim to `REFLEX_RULE_CAP`.
+ *
+ * Used by the high-surprise (`surprise > 0.7`) immediate-reflex path so a
+ * strong lesson becomes a reflex for the very next tool call, without waiting
+ * for the next `session.created` rebuild. `compileRule` (above) turns the
+ * newly-stored memory into a rule; this function inserts it.
+ *
+ * This is NOT on the reflex path — it runs on the deliberative path
+ * (`tool.execute.after`, detached). Mutating the in-RAM cache from the
+ * deliberative path is safe: the reflex path reads the cache synchronously,
+ * and a mid-turn rule insertion is visible to the next call's `matchCall`
+ * (which is the point).
+ */
+export function addRule(cache: ReflexCache, rule: ReflexRule): void {
+  cache.rules.push(rule);
+  cache.rules.sort(
+    (a, b) => b.salience * b.confidence - a.salience * a.confidence,
+  );
+  if (cache.rules.length > REFLEX_RULE_CAP) {
+    cache.rules.length = REFLEX_RULE_CAP;
+  }
+}
