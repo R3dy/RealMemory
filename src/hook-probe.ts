@@ -383,26 +383,32 @@ or the transcript was too thin). Landing could not be evaluated. Re-run
 export async function getDoctorReport(store: MemoryStore): Promise<DoctorReport> {
   const summary = await store.getMetricSummary();
 
-  // Check for completely empty store (inconclusive).
+  // Check for completely empty store (inconclusive) — only when BOTH metrics
+  // table and memories table are empty. A store with memories but no metrics
+  // is NOT inconclusive — it's the zero-fires degraded condition (sessions ran
+  // but the probe was never installed).
   if (summary.length === 0) {
-    const rows: DoctorRow[] = PROBED_HOOKS.map((hook) => ({
-      hook,
-      conditional: (CONDITIONAL_HOOKS as readonly string[]).includes(hook),
-      fires: "no",
-      fireCount: 0,
-      lastSeen: null,
-      lands: hook === TRANSFORM_HOOK ? "unverified" : "na",
-      hostVersion: null,
-      degraded: false,
-    }));
-    return {
-      rows,
-      degraded: false,
-      inconclusive: true,
-      fallbackNotice: null,
-      unverifiableNotice: null,
-      fetchFailedNotice: null,
-    };
+    const memCount = await store.count();
+    if (memCount === 0) {
+      const rows: DoctorRow[] = PROBED_HOOKS.map((hook) => ({
+        hook,
+        conditional: (CONDITIONAL_HOOKS as readonly string[]).includes(hook),
+        fires: "no",
+        fireCount: 0,
+        lastSeen: null,
+        lands: hook === TRANSFORM_HOOK ? "unverified" : "na",
+        hostVersion: null,
+        degraded: false,
+      }));
+      return {
+        rows,
+        degraded: false,
+        inconclusive: true,
+        fallbackNotice: null,
+        unverifiableNotice: null,
+        fetchFailedNotice: null,
+      };
+    }
   }
 
   // Build a lookup of fire counts by hook name.
