@@ -4,6 +4,16 @@ import { deriveProjectId } from "./project-id";
 import { classifyIntent, dynamicLimit, evaluateDelta } from "./brain-loop";
 import type { Intent, ToolCapture } from "./brain-loop";
 import {
+  createProbeState,
+  resetProbeForSession,
+  resolveHostVersion,
+  recordHookFired,
+  recordLandsOutcome,
+  pushSentinel,
+  checkSentinelLanded,
+  type ProbeState,
+} from "./hook-probe";
+import {
   buildSummarizationPrompt,
   callSummaryProvider,
   parseSummarizationResponse,
@@ -42,6 +52,9 @@ interface PluginState {
   lastToolCapture: ToolCapture | null;
   lastInjectedMemoryIds: string[] | null;
   deltaTurnDone: boolean;
+  /** Synthetic-brain Phase 0 probe state. */
+  probe: ProbeState;
+  sessionId: string | null;
 }
 
 /** Check if a file path looks like a config, schema, or route file worth capturing. */
@@ -222,7 +235,12 @@ export default async function realmemoryPlugin(
     lastToolCapture: null,
     lastInjectedMemoryIds: null,
     deltaTurnDone: false,
+    probe: createProbeState(),
+    sessionId: null,
   };
+
+  // Resolve host version once at plugin init (Phase 0 probe).
+  state.probe.hostVersion = resolveHostVersion(ctx as Parameters<typeof resolveHostVersion>[0]);
 
   /**
    * Lazily create and initialize the MemoryStore. Concurrent calls (e.g. two
@@ -269,6 +287,14 @@ export default async function realmemoryPlugin(
       event: { type: string; [key: string]: unknown };
     }) => {
       if (event.type === "session.created") {
+        // Phase 0 probe: reset probe state + capture sessionId BEFORE any config gate.
+        const sid = (event as { properties?: { sessionID?: string } })?.properties?.sessionID;
+        if (sid) {
+          resetProbeForSession(state.probe, sid);
+          state.sessionId = sid;
+        }
+        recordHookFired(getStore, state.probe, "event:session.created");
+
         try {
           const store = await getStore();
           const queryText = `Project at ${ctx.directory}`;
@@ -316,6 +342,26 @@ export default async function realmemoryPlugin(
       }
 
       if (event.type === "session.idle") {
+        // Phase 0 probe: record fire + check sentinel landing (detached, independent of autoSummarize).
+        recordHookFired(getStore, state.probe, "event:session.idle");
+        if (state.probe.sentinelToken && !state.probe.sentinelChecked) {
+          const idleSid = (event as { properties?: { sessionID?: string } })?.properties?.sessionID;
+          if (idleSid) {
+            void (async () => {
+              try {
+                const store = await getStore();
+                await checkSentinelLanded(
+                  store,
+                  state.probe,
+                  () => fetchSessionTranscript(ctx, idleSid),
+                );
+              } catch {
+                // Fire-safe.
+              }
+            })().catch(() => {});
+          }
+        }
+
         // C1 fix (PRIMARY trigger): per-turn delta evaluation on session.idle.
         // Runs BEFORE the LLM summarization. Detached (INV-017).
         if ((state.config as { brainLoop?: boolean }).brainLoop !== false) {
@@ -423,6 +469,9 @@ export default async function realmemoryPlugin(
       input: { tool: string; args?: Record<string, unknown> },
       output: { args?: Record<string, unknown>; output?: unknown },
     ) => {
+      // Phase 0 probe: record fire before any config gate.
+      recordHookFired(getStore, state.probe, "tool.execute.after");
+
       // Fast no-op: when auto-capture is disabled, return BEFORE any DB touch —
       // getStore() (and thus store init) never runs when disabled.
       const captureConfig = state.config as { autoCapture?: boolean } | null;
@@ -515,6 +564,9 @@ export default async function realmemoryPlugin(
       _input: { sessionID?: string },
       output: { message?: { role?: string }; parts?: unknown[] },
     ) => {
+      // Phase 0 probe: record fire before any role check.
+      recordHookFired(getStore, state.probe, "chat.message");
+
       if (output?.message?.role !== "user") return;
       const content = extractUserText(output?.parts ?? []);
       if (!content) return;
@@ -581,6 +633,19 @@ export default async function realmemoryPlugin(
       _input: unknown,
       output: { system?: string[] },
     ) => {
+      // Phase 0 probe — runs on EVERY transform fire, independent of
+      // pendingInjection. Sentinel is pushed once per session (guarded inside
+      // pushSentinel). MUST be before the pendingInjection early return so
+      // zero-recall sessions still produce a landing check.
+      recordHookFired(getStore, state.probe, "experimental.chat.system.transform");
+      const r = pushSentinel(state.probe, output);
+      // pushSentinel is PURE: it does not touch the store. The handler records
+      // the negative signal when the post-push assertion fails (the host handed
+      // us a frozen/replace array that silently dropped the push).
+      if (r.pushed && !r.assertionOk) {
+        recordLandsOutcome(getStore, state.probe, 0);
+      }
+
       if (!state.pendingInjection) return;
       if (!Array.isArray(output?.system)) {
         // Defensive: OpenCode always sends `system: string[]`; if it does not,
@@ -600,6 +665,9 @@ export default async function realmemoryPlugin(
     // store work runs on a detached promise and any failure is logged, never
     // thrown out of the handler or the compaction flow.
     "experimental.session.compacting": () => {
+      // Phase 0 probe: record fire.
+      recordHookFired(getStore, state.probe, "experimental.session.compacting");
+
       // Detached hygiene (INV-017). Runs on context compaction.
       void (async () => {
         try {

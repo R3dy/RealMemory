@@ -250,8 +250,8 @@ describe("system.transform lastInjectedMemoryIds stash (C2 fix)", () => {
     //    delivered this session before clearing pendingInjection.
     const system: string[] = ["You are an agent."];
     await (hooks["experimental.chat.system.transform"] as TransformArgs)({}, { system });
-    expect(system.length).toBe(2);
-    expect(system[1]).toContain("## Relevant memories from previous sessions");
+    expect(system.length).toBe(3);
+    expect(system[2]).toContain("## Relevant memories from previous sessions");
 
     // 4. session.idle -> evaluateDelta sees the stashed IDs (recall_miss, since
     //    the idle trigger delivers no assistant response text).

@@ -243,8 +243,8 @@ describe("brain-loop E2E — recall_hit on delivered memory (C2 fix)", () => {
     // 2. system.transform delivers the staged block and stashes the delivered IDs.
     const system: string[] = ["You are an agent."];
     await (hooks["experimental.chat.system.transform"] as TransformArgs)({}, { system });
-    expect(system.length).toBe(2);
-    expect(system[1]).toContain("## Relevant memories from previous sessions");
+    expect(system.length).toBe(3);
+    expect(system[2]).toContain("## Relevant memories from previous sessions");
 
     // 3. The session.idle delta evaluation runs with assistant text referencing
     //    the delivered memory (the real plugin passes "" on idle; we drive the

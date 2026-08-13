@@ -3,22 +3,26 @@ import { startMcpServer } from "./mcp-server";
 import { startBrowserServer } from "./browser/server";
 import { loadConfig } from "./config";
 import { MemoryStore } from "./store";
+import { printDoctorTable } from "./hook-probe";
 
 /**
- * Parse the --ui / --port / --no-browser flags from argv. Returns whether the
- * browser UI mode was requested, the resolved port, and whether the
- * side-channel auto-start is defeated. Unknown flags are ignored (the CLI has
- * no general-purpose arg parser — hand-rolled parsing adds zero deps, per
- * ADR-003's minimalism).
+ * Parse the --ui / --port / --no-browser / --doctor flags from argv. Returns
+ * whether the browser UI mode was requested, the resolved port, whether the
+ * side-channel auto-start is defeated, and whether the doctor diagnostic mode
+ * was requested. Unknown flags are ignored (the CLI has no general-purpose arg
+ * parser — hand-rolled parsing adds zero deps, per ADR-003's minimalism).
  *
  * --ui still wins over --no-browser: the combination starts the standalone
  * browser regardless (a nonsensical combo, tolerated without an error because
- * the CLI has no arg-validation surface).
+ * the CLI has no arg-validation surface). --doctor is mutually exclusive with
+ * all other modes (it is a one-shot diagnostic that loads the store, prints,
+ * and exits).
  */
-function parseArgs(argv: string[]): { ui: boolean; port: number; noBrowser: boolean } {
+function parseArgs(argv: string[]): { ui: boolean; port: number; noBrowser: boolean; doctor: boolean } {
   let ui = false;
   let port = 9333;
   let noBrowser = false;
+  let doctor = false;
   for (const a of argv.slice(2)) {
     if (a === "--ui") {
       ui = true;
@@ -31,16 +35,41 @@ function parseArgs(argv: string[]): { ui: boolean; port: number; noBrowser: bool
       if (!Number.isNaN(p)) port = p;
     } else if (a === "--no-browser") {
       noBrowser = true;
+    } else if (a === "--doctor") {
+      doctor = true;
     }
   }
-  return { ui, port, noBrowser };
+  return { ui, port, noBrowser, doctor };
 }
 
 export { parseArgs };
 
-const { ui, port, noBrowser } = parseArgs(process.argv);
+const { ui, port, noBrowser, doctor } = parseArgs(process.argv);
 
-if (ui) {
+// --doctor: one-shot diagnostic. Mutually exclusive with all other modes.
+// Loads the store, prints the hook probe report, and exits per the four-state
+// matrix (0 healthy / 2 degraded / 3 inconclusive / 1 crashed).
+if (doctor) {
+  let exitCode = 0;
+  const config = loadConfig();
+  const store = new MemoryStore(config);
+  store
+    .init()
+    .then(() => printDoctorTable(store))
+    .then((code) => {
+      exitCode = code;
+      return store.close();
+    })
+    .then(() => {
+      process.exit(exitCode);
+    })
+    .catch((err: unknown) => {
+      console.error(
+        `realmemory doctor: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      process.exit(1);
+    });
+} else if (ui) {
   // Browser UI mode: start a localhost-only, read-only HTTP graph browser.
   // Mutually exclusive with the MCP stdio server (they contend for the process
   // lifecycle / stdio channel).

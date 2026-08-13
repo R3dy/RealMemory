@@ -1,5 +1,5 @@
 /** Semver version of the realmemory package. */
-export const VERSION = "0.1.1";
+export const VERSION = "0.6.0";
 export * from "./types";
 export * from "./errors";
 export { MemoryStore } from "./store";

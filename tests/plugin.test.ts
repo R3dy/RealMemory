@@ -713,8 +713,8 @@ describe("deduplication", () => {
         output: { system: string[] },
       ) => Promise<void>
     )({}, { system });
-    expect(system.length).toBe(2);
-    expect(system[1]).toContain("## Relevant memories from previous sessions");
+    expect(system.length).toBe(3);
+    expect(system[2]).toContain("## Relevant memories from previous sessions");
 
     const system2: string[] = ["You are an agent."];
     await (
@@ -860,9 +860,9 @@ describe("system prompt injection", () => {
         output: { system: string[] },
       ) => Promise<void>
     )({}, { system });
-    expect(system.length).toBe(2);
-    expect(system[1]).toContain("## Relevant memories from previous sessions");
-    expect(system[1]).toContain("uses SQLite");
+    expect(system.length).toBe(3);
+    expect(system[2]).toContain("## Relevant memories from previous sessions");
+    expect(system[2]).toContain("uses SQLite");
 
     // The staged block is cleared after delivery — nothing is injected again.
     const system2: string[] = ["You are an agent."];
@@ -923,8 +923,8 @@ describe("system prompt injection", () => {
         output: { system: string[] },
       ) => Promise<void>
     )({}, { system });
-    expect(system.length).toBe(2);
-    expect(system[1]).toContain("REST conventions");
+    expect(system.length).toBe(3);
+    expect(system[2]).toContain("REST conventions");
   });
 });
 
@@ -997,7 +997,7 @@ describe("non-blocking hooks", () => {
     }
   });
 
-  it("autoCapture:false is a true fast no-op — never initializes the DB", async () => {
+  it("autoCapture:false is a true fast no-op — never stores memories", async () => {
     const logSpy = vi.fn().mockResolvedValue(undefined);
     const { ctx, dbPath } = makeContext({ autoCapture: false, logSpy });
 
@@ -1013,10 +1013,23 @@ describe("non-blocking hooks", () => {
       { args: { filePath: "/repo/package.json" }, output: "contents" },
     );
 
-    // Give any accidental initialization time to surface — the store must
-    // never have been created.
+    // Give any accidental capture time to surface.
     await new Promise((r) => setTimeout(r, 50));
-    expect(existsSync(dbPath)).toBe(false);
+    // Phase 0 probe may initialize the store for diagnostics (hook_fired
+    // metrics), but autoCapture:false must still result in ZERO memories stored.
+    if (existsSync(dbPath)) {
+      const store = new MemoryStore({
+        projectId: "test",
+        storagePath: dbPath,
+        embeddingMode: "keyword",
+      } as Record<string, unknown>);
+      await store.init();
+      const count = await store.count();
+      expect(count).toBe(0);
+      await store.close();
+    }
+    // If the DB file doesn't exist, the probe's detached getStore() may not
+    // have completed in time — either way, zero memories is the assertion.
   });
 
   it("concurrent rapid tool calls don't throw or drop memories", async () => {
