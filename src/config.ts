@@ -156,6 +156,13 @@ export function validateConfig(config: MemoryStoreConfig): void {
   ) {
     throw new Error("brainLoop must be a boolean");
   }
+  // Synthetic-brain Phase 2: brain.predictionError validation.
+  if (
+    config.brain?.predictionError !== undefined &&
+    typeof config.brain.predictionError !== "boolean"
+  ) {
+    throw new Error("brain.predictionError must be a boolean");
+  }
 }
 
 function readJsonFile(path: string): Record<string, unknown> {

@@ -1,6 +1,6 @@
 {
   "name": "realmemory",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "type": "module",
   "license": "MIT",
   "description": "An OpenCode plugin that gives AI agents real persistent memory — a weighted, indexed database that stores what agents learn across sessions and recalls it automatically.",

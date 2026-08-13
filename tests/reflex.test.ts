@@ -9,6 +9,7 @@ import {
   buildReflexCache,
   matchCall,
   emptyReflexCache,
+  addRule,
   REFLEX_WEIGHT_FLOOR,
   REFLEX_RULE_CAP,
   type ReflexCache,
@@ -379,5 +380,70 @@ describe("buildReflexCache", () => {
     expect(cache.rules).toEqual([]);
     expect(cache.preferences).toEqual([]);
     expect(cache.arousal).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// addRule (Phase 2)
+// ---------------------------------------------------------------------------
+
+describe("addRule", () => {
+  function makeRule(overrides: Partial<ReflexRule> = {}): ReflexRule {
+    return {
+      memoryId: generateUlid(),
+      match: /test/,
+      action: "warn",
+      note: "test note",
+      salience: 0.5,
+      confidence: 0.5,
+      ...overrides,
+    };
+  }
+
+  it("inserts a rule into an empty cache", () => {
+    const cache = emptyReflexCache();
+    const rule = makeRule();
+    addRule(cache, rule);
+    expect(cache.rules).toHaveLength(1);
+    expect(cache.rules[0]).toBe(rule);
+  });
+
+  it("re-sorts by salience × confidence descending after insert", () => {
+    const cache = emptyReflexCache();
+    // Low-priority rule first.
+    const low = makeRule({ memoryId: "low", salience: 0.3, confidence: 0.3 });
+    addRule(cache, low);
+    // High-priority rule second.
+    const high = makeRule({ memoryId: "high", salience: 0.9, confidence: 0.9 });
+    addRule(cache, high);
+
+    // High (0.81) should be first, low (0.09) second.
+    expect(cache.rules[0].memoryId).toBe("high");
+    expect(cache.rules[1].memoryId).toBe("low");
+  });
+
+  it("trims to REFLEX_RULE_CAP when exceeded", () => {
+    const cache = emptyReflexCache();
+    // Fill to cap.
+    for (let i = 0; i < REFLEX_RULE_CAP; i++) {
+      addRule(cache, makeRule({ memoryId: `r${i}`, salience: 0.1, confidence: 0.1 }));
+    }
+    expect(cache.rules).toHaveLength(REFLEX_RULE_CAP);
+    // Add one more — should trim back to cap (dropping the lowest).
+    addRule(cache, makeRule({ memoryId: "overflow", salience: 0.5, confidence: 0.5 }));
+    expect(cache.rules).toHaveLength(REFLEX_RULE_CAP);
+    // The overflow rule (0.25 sal×conf) should be present; one of the 0.01 rules dropped.
+    expect(cache.rules.some((r) => r.memoryId === "overflow")).toBe(true);
+    // Exactly 99 of the original 100 low-priority rules survive (100 cap - 1 overflow).
+    const survivingLow = cache.rules.filter((r) => r.memoryId.startsWith("r"));
+    expect(survivingLow).toHaveLength(REFLEX_RULE_CAP - 1);
+  });
+
+  it("mutates the cache in place (same reference)", () => {
+    const cache = emptyReflexCache();
+    const ref = cache;
+    addRule(cache, makeRule());
+    expect(cache).toBe(ref); // same object reference
+    expect(cache.rules.length).toBe(1);
   });
 });

@@ -184,6 +184,9 @@ function validateConfig(config) {
   if (config.brainLoop !== void 0 && typeof config.brainLoop !== "boolean") {
     throw new Error("brainLoop must be a boolean");
   }
+  if (config.brain?.predictionError !== void 0 && typeof config.brain.predictionError !== "boolean") {
+    throw new Error("brain.predictionError must be a boolean");
+  }
 }
 function readJsonFile(path) {
   const content = readFileSync(path, "utf-8");

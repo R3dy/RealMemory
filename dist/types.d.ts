@@ -346,6 +346,14 @@ interface MemoryStoreConfig {
     brain?: {
         reflex?: boolean;
         inhibition?: "off" | "warn";
+        /**
+         * Synthetic-brain Phase 2: prediction error (surprise-driven encoding).
+         * When `true` (effective default — the field's absence enables the loop),
+         * the plugin runs the predict → compare → encode loop on every tool call.
+         * When explicitly `false`, the loop is skipped (Phase 1 warn-only
+         * behavior preserved). Gated on `!== false`, mirroring the `reflex` pattern.
+         */
+        predictionError?: boolean;
     };
 }
 /**
