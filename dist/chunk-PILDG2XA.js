@@ -11,7 +11,8 @@ var ALWAYS_FIRE_HOOKS = [
 ];
 var CONDITIONAL_HOOKS = [
   "tool.execute.after",
-  "experimental.session.compacting"
+  "experimental.session.compacting",
+  "tool.execute.before"
 ];
 var PROBED_HOOKS = [...ALWAYS_FIRE_HOOKS, ...CONDITIONAL_HOOKS];
 function createProbeState() {
@@ -176,24 +177,27 @@ or the transcript was too thin). Landing could not be evaluated. Re-run
 async function getDoctorReport(store) {
   const summary = await store.getMetricSummary();
   if (summary.length === 0) {
-    const rows2 = PROBED_HOOKS.map((hook) => ({
-      hook,
-      conditional: CONDITIONAL_HOOKS.includes(hook),
-      fires: "no",
-      fireCount: 0,
-      lastSeen: null,
-      lands: hook === TRANSFORM_HOOK ? "unverified" : "na",
-      hostVersion: null,
-      degraded: false
-    }));
-    return {
-      rows: rows2,
-      degraded: false,
-      inconclusive: true,
-      fallbackNotice: null,
-      unverifiableNotice: null,
-      fetchFailedNotice: null
-    };
+    const memCount2 = await store.count();
+    if (memCount2 === 0) {
+      const rows2 = PROBED_HOOKS.map((hook) => ({
+        hook,
+        conditional: CONDITIONAL_HOOKS.includes(hook),
+        fires: "no",
+        fireCount: 0,
+        lastSeen: null,
+        lands: hook === TRANSFORM_HOOK ? "unverified" : "na",
+        hostVersion: null,
+        degraded: false
+      }));
+      return {
+        rows: rows2,
+        degraded: false,
+        inconclusive: true,
+        fallbackNotice: null,
+        unverifiableNotice: null,
+        fetchFailedNotice: null
+      };
+    }
   }
   const fireCounts = /* @__PURE__ */ new Map();
   for (const row of summary) {

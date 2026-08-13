@@ -14,6 +14,13 @@ import {
   type ProbeState,
 } from "./hook-probe";
 import {
+  buildReflexCache,
+  matchCall,
+  emptyReflexCache,
+  type ReflexCache,
+  type ToolCall,
+} from "./reflex";
+import {
   buildSummarizationPrompt,
   callSummaryProvider,
   parseSummarizationResponse,
@@ -55,6 +62,12 @@ interface PluginState {
   /** Synthetic-brain Phase 0 probe state. */
   probe: ProbeState;
   sessionId: string | null;
+  /** Synthetic-brain Phase 1: in-RAM reflex cache. Built at session.created (detached). */
+  reflexCache: ReflexCache | null;
+  /** Synthetic-brain Phase 1: warn note queued by tool.execute.before. Separate from
+   *  pendingInjection to avoid the race where chat.message's detached recall
+   *  overwrites pendingInjection (assignment) after tool.execute.before queued a note. */
+  pendingWarnNote: string | null;
 }
 
 /** Check if a file path looks like a config, schema, or route file worth capturing. */
@@ -237,6 +250,8 @@ export default async function realmemoryPlugin(
     deltaTurnDone: false,
     probe: createProbeState(),
     sessionId: null,
+    reflexCache: emptyReflexCache(),
+    pendingWarnNote: null,
   };
 
   // Resolve host version once at plugin init (Phase 0 probe).
@@ -339,6 +354,24 @@ export default async function realmemoryPlugin(
             `Memory decay failed: ${error instanceof Error ? error.message : String(error)}`,
           ),
         );
+
+        // ----- Synthetic-brain Phase 1: build ReflexCache (detached) -----
+        // Gated on brain.reflex (defaults true). Cold cache = no inhibition = safe.
+        if ((state.config as { brain?: { reflex?: boolean } }).brain?.reflex !== false) {
+          void (async () => {
+            try {
+              const store = await getStore();
+              state.reflexCache = await buildReflexCache(store);
+              await log("debug", `ReflexCache built: ${state.reflexCache.rules.length} rules`);
+            } catch (error) {
+              await log(
+                "error",
+                `ReflexCache build failed: ${error instanceof Error ? error.message : String(error)}`,
+              );
+              // Cold cache = no inhibition — safe failure mode.
+            }
+          })();
+        }
       }
 
       if (event.type === "session.idle") {
@@ -459,6 +492,51 @@ export default async function realmemoryPlugin(
           );
         }
       }
+    },
+
+    // Synthetic-brain Phase 1: reflex-path inhibition (warn only).
+    // SYNCHRONOUS — must complete within 5ms. Cache-only, no I/O (ADR-010).
+    // On match: queues a warn note into pendingWarnNote (separate from
+    // pendingInjection to avoid the race where chat.message's detached recall
+    // overwrites pendingInjection). The transform hook delivers both.
+    "tool.execute.before": (
+      input: { tool: string; args?: Record<string, unknown> },
+      output: { args?: Record<string, unknown> },
+    ) => {
+      // Phase 0 probe: record fire.
+      recordHookFired(getStore, state.probe, "tool.execute.before");
+
+      // Config gate: brain.reflex defaults true; brain.inhibition defaults "warn".
+      const brainConfig = state.config as {
+        brain?: { reflex?: boolean; inhibition?: string };
+      };
+      if (brainConfig.brain?.reflex === false) return;
+      if (brainConfig.brain?.inhibition === "off") return;
+
+      // Reflex path: synchronous, cache-only, no I/O. Cold cache = no-op.
+      const cache = state.reflexCache;
+      if (!cache || cache.rules.length === 0) return;
+
+      const call: ToolCall = { tool: input.tool, args: input.args ?? output.args };
+      const rule = matchCall(cache, call);
+      if (!rule) return;
+
+      // Warn: queue a one-line note into pendingWarnNote (separate field — avoids race).
+      state.pendingWarnNote = `[realmemory reflex] ${rule.note}`;
+
+      // Record reflex_fire metric (detached — non-blocking, fire-and-forget).
+      void (async () => {
+        try {
+          const store = await getStore();
+          await store.recordMetric(
+            `reflex_fire:${rule.memoryId}`,
+            1,
+            state.sessionId ?? undefined,
+          );
+        } catch {
+          // Fire-safe — never throw out of the reflex path.
+        }
+      })();
     },
 
     // On tool execution: auto-capture learnings (if enabled, default true).
@@ -646,17 +724,28 @@ export default async function realmemoryPlugin(
         recordLandsOutcome(getStore, state.probe, 0);
       }
 
-      if (!state.pendingInjection) return;
+      // Phase 1: deliver both pendingInjection (recall block) and pendingWarnNote
+      // (reflex warn). Two separate fields avoid the race where chat.message's
+      // detached recall overwrites pendingInjection after tool.execute.before
+      // queued a warn note.
+      if (!state.pendingInjection && !state.pendingWarnNote) return;
       if (!Array.isArray(output?.system)) {
         // Defensive: OpenCode always sends `system: string[]`; if it does not,
-        // drop the staged block rather than crashing the chat request.
+        // drop the staged blocks rather than crashing the chat request.
         state.pendingInjection = null;
+        state.pendingWarnNote = null;
         return;
       }
-      output.system.push(state.pendingInjection);
-      // C2 fix: stash the IDs delivered THIS TURN before clearing pendingInjection.
-      state.lastInjectedMemoryIds = Array.from(state.injectedMemoryIds).slice(-5);
-      state.pendingInjection = null;
+      if (state.pendingInjection) {
+        output.system.push(state.pendingInjection);
+        // C2 fix: stash the IDs delivered THIS TURN before clearing pendingInjection.
+        state.lastInjectedMemoryIds = Array.from(state.injectedMemoryIds).slice(-5);
+        state.pendingInjection = null;
+      }
+      if (state.pendingWarnNote) {
+        output.system.push(state.pendingWarnNote);
+        state.pendingWarnNote = null;
+      }
     },
 
     // On context compaction: run detached hygiene (INV-017) — rate-limited

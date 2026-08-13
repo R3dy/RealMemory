@@ -336,6 +336,17 @@ interface MemoryStoreConfig {
      * runs a full dedup + decay pass. Defaults to 4.
      */
     compactingIntervalHours?: number;
+    /**
+     * Synthetic-brain Phase 1: reflex cache + inhibition.
+     * When `reflex` is true (default), build ReflexCache at session start and
+     * wire `tool.execute.before`. When false, no inhibition (today's behavior).
+     * `inhibition` controls the action: "off" (no-op), "warn" (advisory note,
+     * default). "rewrite" and "block" are Phase 4 (not valid values here).
+     */
+    brain?: {
+        reflex?: boolean;
+        inhibition?: "off" | "warn";
+    };
 }
 /**
  * Configuration for the summary provider used by auto-summarization.
