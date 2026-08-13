@@ -1,5 +1,10 @@
 /** Semver version of the realmemory package. */
 export const VERSION = "0.6.0";
+
+/** Returns a simple health status object. */
+export function getHealth(): { status: string; timestamp: string } {
+  return { status: "ok", timestamp: new Date().toISOString() };
+}
 export * from "./types";
 export * from "./errors";
 export { MemoryStore } from "./store";

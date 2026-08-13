@@ -17,9 +17,23 @@ import {
   buildReflexCache,
   matchCall,
   emptyReflexCache,
+  addRule,
+  compileRule,
   type ReflexCache,
   type ToolCall,
 } from "./reflex";
+import {
+  predictOutcome,
+  classifyOutcome,
+  computeSurprise,
+  shouldEncode,
+  surpriseBin,
+  describe,
+  hashArgs,
+  consumePrediction,
+  type Prediction,
+  type Outcome,
+} from "./predict";
 import {
   buildSummarizationPrompt,
   callSummaryProvider,
