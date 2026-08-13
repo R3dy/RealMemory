@@ -15,7 +15,7 @@ autonomous_mode: true
 | 2 Planning | COMPLETE | docs/api-design.md + 5 ADRs |
 | 3 Solutioning | COMPLETE | docs/solutioning/epics.md + backlog.md + dependency-graph.md |
 | 4 Implementation | COMPLETE | 20 stories, 265 tests, all merged to main |
-| 5 Launch | COMPLETE | v0.7.0 — built Aug 12 2026; brain-loop ACTIVE in host OpenCode; synthetic-brain Phase 0 + Phase 1 shipped. Distributed via git-install (`realmemory@git+https://github.com/R3dy/RealMemory.git`) — npm publish is OFF the table (Royce has no npm login). |
+| 5 Launch | COMPLETE | v0.8.0 — built Aug 13 2026; brain-loop ACTIVE in host OpenCode; synthetic-brain Phase 0 + Phase 1 + Phase 2 shipped. Distributed via git-install (`realmemory@git+https://github.com/R3dy/RealMemory.git`) — npm publish is OFF the table (Royce has no npm login). |
 
 ## Plugin status (live in this environment)
 
@@ -42,9 +42,18 @@ autonomous_mode: true
 
 ## Current Step
 
-**v0.5.0 built + live; plugin load FIX applied + verified via testing harness.** Issue #28 root cause found and fixed: the ADR-009 `plugin-entry.ts` shipped with `{ server: realmemoryPlugin }` but was missing `id: "realmemory"`. OpenCode's plugin loader requires `id` for file/path plugins (no `package.json` `name` fallback for file plugins). Fix applied to `src/plugin-entry.ts`, rebuilt, and verified via `opencode run --print-logs --log-level DEBUG` harness — all 6 hooks fire, `preference_compliance` metric recorded by `evaluateDelta`. **Royce must restart OpenCode** for the fix to take effect in this interactive session (the running session loaded the old plugin-entry.js). Next: npm publish v0.5.0 (needs Royce's npm login). Then revisit remaining PARKING_LOT drift items (#5/#6/#7).
+**v0.8.0 built + live; synthetic-brain Phase 2 (prediction error) shipped.** Issue #34 shipped (PR #35, merge `838b423`, tag `issue-34`). The predict→compare→encode loop is live: `tool.execute.before` stashes a prediction (reflex-path, <5ms), `tool.execute.after` computes surprise and encodes/reinforces accordingly (deliberative-path, detached). 619 tests pass. **Royce must restart OpenCode** for the v0.8.0 plugin to take effect — after restart, surprising tool outcomes will produce `prediction_error:<bin>` metrics and high-salience `lesson_learned` encodes. Next: Phase 3 (working-memory window — `docs/architecture/synthetic-brain.md` §4.2).
 
 ## Agile increments (post-launch)
+
+### Issue #34 — Synthetic-brain Phase 2: prediction error (surprise-driven encoding) (2026-08-13)
+- **Status:** CLOSED (PR #35 squash merge `838b423`, tag `issue-34`)
+- **What:** Implemented Phase 2 of the synthetic-brain design. New `src/predict.ts` — `predictOutcome` (reflex-path, cache-only, <5ms — consumes the already-matched Phase 1 rule; null rule → uncertain default `{willSucceed:true, confidence:0.5}`), `classifyOutcome` (reuses `isErrorResult` for bash, defensive for other tools), `computeSurprise` (`|actual - expected|`, 0..1), `shouldEncode` (≥0.2 threshold), `surpriseBin` (low/med/high), `describe` (human-readable lesson content), `hashArgs` (stable JSON-stringify for call ID synthesis), `consumePrediction` (full `tool:argsHash:` prefix match with fallback — C4 interleaving fix). `src/reflex.ts` `addRule` (mutate cache in place, re-sort, trim to cap — immediate-reflex on strong surprise >0.7). Plugin wiring: `tool.execute.before` restructured (C1 — predict+stash runs for BOTH match and no-match, gated only on `brain.predictionError`), `tool.execute.after` dual-gated (C2 — `autoCapture && predictionError` both off → short-circuit; legacy capture gated on `autoCapture`; prediction block gated on `predictionError`), `chat.message` correction via `lastPredictionOutcome` (C3 — `pendingPredictions` is empty by `chat.message` time; consume the outcome field instead, double-encode avoidance by reinforcing the already-encoded row), `session.idle` leak sweep. Config: `brain.predictionError: true` (default via `!== false` gate). Metric: `prediction_error:<bin>` via `get_metrics` MCP tool.
+- **Pipeline:** anymake-agile — Cartographer refreshed intent layer (ADR-010 → INV-017 + DECISIONS.md), Solution Architect plan (470 lines, round 2 after R1 NEEDS CHANGES with 6 blocking + 2 non-blocking comments — all in the wiring, substrate claims verified correct), Plan Reviewer R2 APPROVED (4 non-blocking nits), Product Owner Proxy APPROVED 6/6. Direct build (per plan thoroughness + sub-agent fragility lesson).
+- **Tests:** 619 pass (up from 571 — 48 new: 33 predict unit + 4 reflex addRule + 11 plugin integration). 5 pre-existing EADDRINUSE (port 9333, environmental).
+- **Version:** 0.7.0 → 0.8.0 (MINOR — additive feature, no breaking change; pre-1.0 semver per ADR-004).
+- **Intent layer:** ADR-010 (two-pathway constraint) affirmed not contradicted. INV-017 amended form preserved (reflex-path synchronous <5ms cache-only; deliberative-path detached). ADR-003/INV-014 (dep cap) not touched (zero new deps). INV-005 (no schema migration). INV-015 (additive MINOR). INV-018 (reinforcement used as-is).
+- **Revert:** `git revert -m 1 838b423` (additive metrics rows + in-RAM cache + pendingPredictions Map; no migration down. Encoded lessons are real and stay — tagged `metadata.source: "prediction-error"`).
 
 ### Issue #32 — Synthetic-brain Phase 1: ReflexCache + tool.execute.before warn inhibition (2026-08-12)
 - **Status:** CLOSED (PR #33 squash merge `22fb74d`, tag `issue-32`)
@@ -158,27 +167,27 @@ autonomous_mode: true
 - **Follow-ups identified:** (a) domain backfill on 11 undefined-domain memories, (b) per-project architecture facts for realvol/realcode/basecamp, (c) session summaries for more high-cost sessions, (d) exhaustive pass over remaining ~1600 sessions (the methodology is repeatable).
 
 resume_next: >
-  STATUS (Aug 12 2026): realmemory v0.7.0 — synthetic-brain Phase 1 shipped
-  (issue #32, PR #33, merge 22fb74d, tag issue-32). ReflexCache +
-  tool.execute.before warn inhibition is live. 571 tests pass. Royce must
+  STATUS (Aug 13 2026): realmemory v0.8.0 — synthetic-brain Phase 2
+  shipped (issue #34, PR #35, merge 838b423, tag issue-34). Prediction
+  error (surprise-driven encoding) is live. 619 tests pass. Royce must
   restart OpenCode for the instrumented plugin to take effect — after
-  restart, tool calls matching known lessons will produce advisory warn notes.
+  restart, surprising tool outcomes will produce prediction_error:<bin>
+  metrics and high-salience lesson_learned encodes.
 
   REMAINING (in priority order):
-  (1) Royce restarts OpenCode — picks up the v0.7.0 plugin. After a session,
-  run `node dist/bin.js --doctor` — expect tool.execute.before in the doctor
-  table (conditional, fires on tool calls).
-  (2) Synthetic-brain Phases 2-7 — each as its own issue under the
-  synthetic-brain milestone. Phase 2 (prediction error — surprise-driven
-  encoding) is the next entry point. The design doc is at
-  `docs/architecture/synthetic-brain.md` §4.5.
-  (3) ADR-010 (two-pathway constraint) needs to be reflected in
-  docs/INVARIANTS.md INV-017 — Cartographer refresh.
-  (4) npm publish v0.7.0 — requires Royce's npm login. CRITICAL: add "skills"
-  and "scripts" to package.json files[] before publishing.
-  (5) Amend ADR-009 to document the `id` requirement for file/path plugins
-  (from issue #28 — still pending).
-  (6) PARKING_LOT drift items from #22: Drift #5 (secrets-before-LLM), #6
-  (zod 4th dep), #7 (schema-v3 ADR-less). Separate issues.
+  (1) Royce restarts OpenCode — picks up the v0.8.0 plugin. After a
+  session, check get_metrics for prediction_error:<bin> rows.
+  (2) Synthetic-brain Phase 3 (working-memory window) — the next entry
+  point. The design doc is at `docs/architecture/synthetic-brain.md`
+  §4.2. Budgeted slotted injection rebuilt per turn under a token budget.
+  (3) Cartographer refresh — ADR-010 is now reflected in DECISIONS.md +
+  INV-017 (done by the #34 Cartographer run). ADR-009 `id` amendment
+  still pending (from issue #28).
+  (4) npm publish v0.8.0 — requires Royce's npm login. CRITICAL: add
+  "skills" and "scripts" to package.json files[] before publishing.
+  (5) Amend ADR-009 to document the `id` requirement for file/path
+  plugins (from issue #28 — still pending).
+  (6) PARKING_LOT drift items from #22: Drift #5 (secrets-before-LLM),
+  #6 (zod 4th dep), #7 (schema-v3 ADR-less). Separate issues.
   (7) Domain backfill: 11 memories have undefined domain.
   (8) Consider re-adding a future Node LTS to CI.
