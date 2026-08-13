@@ -57,14 +57,15 @@ describe("hook-probe constants", () => {
     expect([...ALWAYS_FIRE_HOOKS]).toContain("experimental.chat.system.transform");
   });
 
-  it("CONDITIONAL_HOOKS has 2 entries", () => {
-    expect(CONDITIONAL_HOOKS).toHaveLength(2);
+  it("CONDITIONAL_HOOKS has 3 entries", () => {
+    expect(CONDITIONAL_HOOKS).toHaveLength(3);
     expect([...CONDITIONAL_HOOKS]).toContain("tool.execute.after");
     expect([...CONDITIONAL_HOOKS]).toContain("experimental.session.compacting");
+    expect([...CONDITIONAL_HOOKS]).toContain("tool.execute.before");
   });
 
-  it("PROBED_HOOKS is the concatenation (6 entries)", () => {
-    expect(PROBED_HOOKS).toHaveLength(6);
+  it("PROBED_HOOKS is the concatenation (7 entries)", () => {
+    expect(PROBED_HOOKS).toHaveLength(7);
   });
 });
 
@@ -330,7 +331,7 @@ describe("getDoctorReport", () => {
     const report = await getDoctorReport(store);
     expect(report.inconclusive).toBe(true);
     expect(report.degraded).toBe(false);
-    expect(report.rows).toHaveLength(6);
+    expect(report.rows).toHaveLength(7);
   });
 
   it("returns degraded=true when transform lands=0 (observable-absent)", async () => {

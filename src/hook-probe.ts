@@ -38,6 +38,7 @@ export const ALWAYS_FIRE_HOOKS = [
 export const CONDITIONAL_HOOKS = [
   "tool.execute.after",
   "experimental.session.compacting",
+  "tool.execute.before",
 ] as const;
 
 /** All probed hooks (single source of truth — 6 entries). */

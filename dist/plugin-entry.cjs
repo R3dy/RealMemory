@@ -2013,7 +2013,8 @@ var ALWAYS_FIRE_HOOKS = [
 ];
 var CONDITIONAL_HOOKS = [
   "tool.execute.after",
-  "experimental.session.compacting"
+  "experimental.session.compacting",
+  "tool.execute.before"
 ];
 var PROBED_HOOKS = [...ALWAYS_FIRE_HOOKS, ...CONDITIONAL_HOOKS];
 function createProbeState() {
@@ -2146,6 +2147,95 @@ async function checkSentinelLanded(store, probe, fetchTranscript) {
     0,
     probe.sessionId ?? void 0
   );
+}
+
+// src/reflex.ts
+var REFLEX_WEIGHT_FLOOR = 0.3;
+var REFLEX_RULE_CAP = 100;
+var PREFERENCES_CAP = 10;
+var SEARCH_LIMIT = 200;
+var NOTE_MAX_LENGTH = 120;
+function emptyReflexCache() {
+  return {
+    rules: [],
+    preferences: [],
+    arousal: 0,
+    builtAt: 0
+  };
+}
+function compileRule(memory) {
+  if (memory.type !== "lesson_learned") return null;
+  const metadata = memory.metadata ?? {};
+  const command = typeof metadata.command === "string" ? metadata.command : null;
+  const filePath = typeof metadata.filePath === "string" ? metadata.filePath : null;
+  let matcher = null;
+  if (command) {
+    const cmdSubstring = command.slice(0, 100);
+    matcher = (call) => {
+      if (call.tool !== "bash") return false;
+      const callCommand = call.args?.command;
+      if (typeof callCommand !== "string") return false;
+      return callCommand.includes(cmdSubstring);
+    };
+  } else if (filePath) {
+    const pathSubstring = filePath.slice(0, 200);
+    matcher = (call) => {
+      if (call.tool !== "read") return false;
+      const callFilePath = call.args?.filePath;
+      if (typeof callFilePath !== "string") return false;
+      return callFilePath.includes(pathSubstring);
+    };
+  }
+  if (!matcher) return null;
+  const note = memory.content.length > NOTE_MAX_LENGTH ? `${memory.content.slice(0, NOTE_MAX_LENGTH - 3)}...` : memory.content;
+  return {
+    memoryId: memory.id,
+    match: matcher,
+    action: "warn",
+    note,
+    salience: Math.max(0, Math.min(1, memory.weight)),
+    confidence: Math.max(0, Math.min(1, memory.confidence))
+  };
+}
+async function buildReflexCache(store) {
+  const query = {
+    types: ["lesson_learned", "user_preference"],
+    minWeight: REFLEX_WEIGHT_FLOOR,
+    sortBy: "weight",
+    sortOrder: "desc",
+    limit: SEARCH_LIMIT
+  };
+  const results = await store.search(query);
+  const rules = [];
+  const preferences = [];
+  for (const memory of results.memories) {
+    if (memory.type === "user_preference") {
+      preferences.push(memory.content);
+      continue;
+    }
+    const rule = compileRule(memory);
+    if (rule) rules.push(rule);
+  }
+  rules.sort((a, b) => b.salience * b.confidence - a.salience * a.confidence);
+  return {
+    rules: rules.slice(0, REFLEX_RULE_CAP),
+    preferences: preferences.slice(0, PREFERENCES_CAP),
+    arousal: 0,
+    // Phase 1 stub — Phase 4 (arousal) populates this
+    builtAt: Date.now()
+  };
+}
+function matchCall(cache, call) {
+  if (!cache || cache.rules.length === 0) return null;
+  for (const rule of cache.rules) {
+    if (typeof rule.match === "function") {
+      if (rule.match(call)) return rule;
+    } else {
+      const callStr = `${call.tool} ${JSON.stringify(call.args ?? {})}`;
+      if (rule.match.test(callStr)) return rule;
+    }
+  }
+  return null;
 }
 
 // src/summarize.ts
@@ -2418,7 +2508,9 @@ async function realmemoryPlugin(ctx) {
     lastInjectedMemoryIds: null,
     deltaTurnDone: false,
     probe: createProbeState(),
-    sessionId: null
+    sessionId: null,
+    reflexCache: emptyReflexCache(),
+    pendingWarnNote: null
   };
   state.probe.hostVersion = resolveHostVersion(ctx);
   async function getStore() {
@@ -2492,6 +2584,20 @@ async function realmemoryPlugin(ctx) {
             `Memory decay failed: ${error instanceof Error ? error.message : String(error)}`
           )
         );
+        if (state.config.brain?.reflex !== false) {
+          void (async () => {
+            try {
+              const store = await getStore();
+              state.reflexCache = await buildReflexCache(store);
+              await log("debug", `ReflexCache built: ${state.reflexCache.rules.length} rules`);
+            } catch (error) {
+              await log(
+                "error",
+                `ReflexCache build failed: ${error instanceof Error ? error.message : String(error)}`
+              );
+            }
+          })();
+        }
       }
       if (event.type === "session.idle") {
         recordHookFired(getStore, state.probe, "event:session.idle");
@@ -2593,6 +2699,34 @@ async function realmemoryPlugin(ctx) {
           );
         }
       }
+    },
+    // Synthetic-brain Phase 1: reflex-path inhibition (warn only).
+    // SYNCHRONOUS — must complete within 5ms. Cache-only, no I/O (ADR-010).
+    // On match: queues a warn note into pendingWarnNote (separate from
+    // pendingInjection to avoid the race where chat.message's detached recall
+    // overwrites pendingInjection). The transform hook delivers both.
+    "tool.execute.before": (input, output) => {
+      recordHookFired(getStore, state.probe, "tool.execute.before");
+      const brainConfig = state.config;
+      if (brainConfig.brain?.reflex === false) return;
+      if (brainConfig.brain?.inhibition === "off") return;
+      const cache = state.reflexCache;
+      if (!cache || cache.rules.length === 0) return;
+      const call = { tool: input.tool, args: input.args ?? output.args };
+      const rule = matchCall(cache, call);
+      if (!rule) return;
+      state.pendingWarnNote = `[realmemory reflex] ${rule.note}`;
+      void (async () => {
+        try {
+          const store = await getStore();
+          await store.recordMetric(
+            `reflex_fire:${rule.memoryId}`,
+            1,
+            state.sessionId ?? void 0
+          );
+        } catch {
+        }
+      })();
     },
     // On tool execution: auto-capture learnings (if enabled, default true).
     // Non-blocking: the handler resolves immediately and all store work (DB
@@ -2729,14 +2863,21 @@ async function realmemoryPlugin(ctx) {
       if (r.pushed && !r.assertionOk) {
         recordLandsOutcome(getStore, state.probe, 0);
       }
-      if (!state.pendingInjection) return;
+      if (!state.pendingInjection && !state.pendingWarnNote) return;
       if (!Array.isArray(output?.system)) {
         state.pendingInjection = null;
+        state.pendingWarnNote = null;
         return;
       }
-      output.system.push(state.pendingInjection);
-      state.lastInjectedMemoryIds = Array.from(state.injectedMemoryIds).slice(-5);
-      state.pendingInjection = null;
+      if (state.pendingInjection) {
+        output.system.push(state.pendingInjection);
+        state.lastInjectedMemoryIds = Array.from(state.injectedMemoryIds).slice(-5);
+        state.pendingInjection = null;
+      }
+      if (state.pendingWarnNote) {
+        output.system.push(state.pendingWarnNote);
+        state.pendingWarnNote = null;
+      }
     },
     // On context compaction: run detached hygiene (INV-017) — rate-limited
     // decay under a separate meta key (decay:compacting), a bounded dedup
