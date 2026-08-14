@@ -18,7 +18,6 @@ function makeRule(overrides: Partial<ReflexRule> = {}): ReflexRule {
   return {
     memoryId: "mem-001",
     match: /test/,
-    action: "warn",
     note: "test note",
     salience: 0.7,
     confidence: 0.6,

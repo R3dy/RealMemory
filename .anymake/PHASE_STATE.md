@@ -15,7 +15,7 @@ autonomous_mode: true
 | 2 Planning | COMPLETE | docs/api-design.md + 5 ADRs |
 | 3 Solutioning | COMPLETE | docs/solutioning/epics.md + backlog.md + dependency-graph.md |
 | 4 Implementation | COMPLETE | 20 stories, 265 tests, all merged to main |
-| 5 Launch | COMPLETE | v0.9.0 — built Aug 13 2026; brain-loop ACTIVE in host OpenCode; synthetic-brain Phase 0 + Phase 1 + Phase 2 + Phase 3 shipped. Distributed via git-install (`realmemory@git+https://github.com/R3dy/RealMemory.git`) — npm publish is OFF the table (Royce has no npm login). |
+| 5 Launch | COMPLETE | v0.10.0 — built Aug 14 2026; brain-loop ACTIVE in host OpenCode; synthetic-brain Phase 0 + Phase 1 + Phase 2 + Phase 3 + Phase 4a shipped. Distributed via git-install (`realmemory@git+https://github.com/R3dy/RealMemory.git`) — npm publish is OFF the table (Royce has no npm login). |
 
 ## Plugin status (live in this environment)
 
@@ -42,9 +42,19 @@ autonomous_mode: true
 
 ## Current Step
 
-**v0.9.0 built + live; synthetic-brain Phase 3 (working-memory window) shipped.** Issue #36 shipped (PR #37, merge `14a9903`, tag `issue-36`). The transform hook now assembles a budgeted, slotted, rebuilt-per-turn working-memory window from staged slot data (identity, taskFrame, queriedLessons, freshLessons, openPredictions). `injectedMemoryIds` cleared on `session.compacting` (re-injectable after compaction). 644 tests (639 pass + 5 pre-existing EADDRINUSE). **Royce must restart OpenCode** for the v0.9.0 plugin to take effect — after restart, the working-memory window will appear in system prompts with `## Working memory` header. Next: Phase 4 (`rewrite` + `permission.ask` — high-risk, opt-in, default off) or Phase 5 (arousal + `tool.definition`).
+**v0.10.0 built + live; synthetic-brain Phase 4a (rewrite + block inhibition) shipped.** Issue #38 shipped (PR #39, tag `issue-38`). The inhibition gate now changes behavior, not just context: `rewrite` mutates tool args in place; `block` aborts the call with a teaching message; override (same-call retry) decrements confidence in-RAM + DB (extinction). Config `brain.inhibition: "off"|"warn"|"rewrite"|"block"` (default `"warn"` — regression-free). 676 tests (671 pass + 5 pre-existing EADDRINUSE). **Royce must restart OpenCode** for the v0.10.0 plugin to take effect. Next: Phase 4b (`permission.ask` — security surface, needs Royce's explicit review, issue #39) or Phase 5 (arousal + `tool.definition`).
 
 ## Agile increments (post-launch)
+
+### Issue #38 — Synthetic-brain Phase 4a: rewrite + block inhibition (behavior-changing gate, opt-in, default off) (2026-08-14)
+- **Status:** CLOSED (PR #39 squash merge, tag `issue-38`)
+- **What:** Implemented Phase 4a of the synthetic-brain design. The inhibition gate now changes behavior, not just context. `src/reflex.ts`: `ReflexRule.action` removed, replaced by `rewrite?` (compiled from `metadata.rewrite: {tool,from,to}`) + `blockEligible?` (from `category: safety|cost`). New `decideAction(rule, inhibition)` pure function — config ceiling (`brain.inhibition: "off"|"warn"|"rewrite"|"block"`, default `"warn"`) + salience + confidence gates pick the action. Block requires `salience >= 0.8 && confidence >= 0.5 && blockEligible`. Rewrite requires `salience >= 0.5 && confidence >= 0.3 && rewrite fn`. New `decrementRuleConfidence(cache, memoryId, amount)` — in-RAM extinction. `src/plugin.ts` `tool.execute.before`: rewrite mutates `output.args`; block throws with teaching message + sets `lastBlock`; override (same-call retry via untruncated `safeArgsKey` — NOT `hashArgs` which truncates at 200 chars, R1-C3) decrements confidence in-RAM + DB + records `reflex_override` metric. Extinction: after 1-3 overrides, confidence drops below 0.5 → no more blocks. `lastBlock` cleared on different call, session.idle, or override. `sortKeys` exported from `predict.ts` (single source of truth). Config validation: `inhibition` accepts 4 values, rejects invalid. Metrics: `reflex_rewrite:<id>`, `reflex_block:<id>`, `reflex_override:<id>` (detached). `SERVER_VERSION` synced to `0.10.0`.
+- **Pipeline:** anymake-agile — Solution Architect plan written directly (3 review rounds: R1 3 blocking, R2 1 blocking, R3 APPROVED). Product Owner Proxy APPROVED (non-security — no permission.ask). Direct build (per plan thoroughness + sub-agent fragility lesson).
+- **Tests:** 676 total (671 pass + 5 pre-existing EADDRINUSE). 32 new (17 reflex: compileRule capabilities, decideAction 28-case matrix, decrementRuleConfidence extinction; 9 plugin-reflex: rewrite mutation, block throw + message, override no-reblock + false-override + session.idle clear; 2 config: inhibition validation; 4 predict: sortKeys export + makeRule update). 3 existing test files updated (`action: "warn"` → capabilities).
+- **Version:** 0.9.0 → 0.10.0 (MINOR — additive feature, no breaking public API change; pre-1.0 semver per ADR-004).
+- **Intent layer:** ADR-010 (two-pathway) affirmed — all on reflex path, synchronous, <5ms, cache-only. INV-017 (reflex <5ms) preserved. INV-014 (dep cap) not touched (zero new deps). INV-005 (no schema migration). INV-015 (additive type widening). INV-019 (dist committed). No new ADR needed — ADR-010 already anticipates rewrite/block. Design doc §3.1 ReflexRule.action superseded by capability model (documented in plan).
+- **Revert:** `git revert -m 1 <merge-sha>` — internal type modification (field replacement on ReflexRule), no schema, no deps, no new hooks. Rebuild dist/ after revert (INV-019).
+- **Split:** Phase 4 split into 4a (this issue — rewrite + block, non-security) and 4b (issue #39 — `permission.ask` habit formation, security surface, needs Royce's explicit review).
 
 ### Issue #36 — Synthetic-brain Phase 3: working-memory window (budgeted slotted injection) (2026-08-13)
 - **Status:** CLOSED (PR #37 squash merge `14a9903`, tag `issue-36`)
@@ -174,26 +184,27 @@ autonomous_mode: true
 - **Follow-ups identified:** (a) domain backfill on 11 undefined-domain memories, (b) per-project architecture facts for realvol/realcode/basecamp, (c) session summaries for more high-cost sessions, (d) exhaustive pass over remaining ~1600 sessions (the methodology is repeatable).
 
 resume_next: >
-  STATUS (Aug 13 2026): realmemory v0.9.0 — synthetic-brain Phase 3
-  (working-memory window) shipped (issue #36, PR #37, merge 14a9903,
-  tag issue-36). Budgeted, slotted, rebuilt-per-turn injection replaces
-  the old one-shot pendingInjection. injectedMemoryIds cleared on
-  compaction (re-injectable). 644 tests (639 pass + 5 EADDRINUSE).
-  Royce must restart OpenCode for the v0.9.0 plugin to take effect.
+  STATUS (Aug 14 2026): realmemory v0.10.0 — synthetic-brain Phase 4a
+  (rewrite + block inhibition) shipped (issue #38, PR #39, tag issue-38).
+  The inhibition gate now changes behavior: rewrite mutates args, block
+  throws, override decrements confidence (extinction). Config
+  brain.inhibition: "off"|"warn"|"rewrite"|"block" (default "warn" —
+  regression-free). 676 tests (671 pass + 5 EADDRINUSE).
+  Royce must restart OpenCode for the v0.10.0 plugin to take effect.
 
   REMAINING (in priority order):
-  (1) Royce restarts OpenCode — picks up the v0.9.0 plugin. After a
-  session, check get_metrics for working_memory:<slot> rows + verify
-  ## Working memory appears in system prompts.
-  (2) Synthetic-brain Phase 4 (rewrite + permission.ask) — HIGH RISK,
-  opt-in, default off. Memory changes behavior, not just context.
-  Design doc §4.3, §5.
+  (1) Royce restarts OpenCode — picks up the v0.10.0 plugin. Verify:
+  set brain.inhibition: "block" + store a category: "safety" lesson,
+  trigger the matching command, confirm the block message appears.
+  (2) Synthetic-brain Phase 4b (permission.ask habit formation) —
+  SECURITY SURFACE, needs Royce's explicit review. Issue #39.
+  Auto-allow after N approvals (never widens denied); auto-deny
+  default off. Schema V5 habits table. Design doc §4.3 second half.
   (3) Synthetic-brain Phase 5 (arousal + tool.definition) — LOW risk.
   chat.params modulation + memory notes in tool schemas. §4.4.
-  (4) Cartographer refresh — ADR-010 is reflected in DECISIONS.md +
-  INV-017. Phase 3 changes are internal (no new ADR needed). ADR-009
-  `id` amendment still pending (from issue #28).
-  (5) npm publish v0.9.0 — requires Royce's npm login. CRITICAL: add
+  (4) Cartographer refresh — Phase 4a changes are internal (no new
+  ADR needed). ADR-009 `id` amendment still pending (from issue #28).
+  (5) npm publish v0.10.0 — requires Royce's npm login. CRITICAL: add
   "skills" and "scripts" to package.json files[] before publishing.
   (6) Amend ADR-009 to document the `id` requirement for file/path
   plugins (from issue #28 — still pending).

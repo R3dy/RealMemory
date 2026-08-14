@@ -19,7 +19,7 @@ function writeProjectConfig(projectDir: string, config: Record<string, unknown>)
 }
 
 function makeContext(opts?: {
-  brain?: { reflex?: boolean; inhibition?: string };
+  brain?: { reflex?: boolean; inhibition?: string; predictionError?: boolean };
 }): { ctx: OpenCodePluginContext; projectDir: string; dbPath: string } {
   const dbPath = uniqueDbPath();
   const projectDir = join(tempDir, `proj-${generateUlid()}`);
@@ -258,5 +258,269 @@ describe("plugin tool.execute.before (Phase 1 reflex)", () => {
     const warnNote = output.system.find((s) => s.includes("[realmemory reflex]"));
     expect(warnNote).toBeDefined();
     expect(warnNote).toContain("npm install fails");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 4a: rewrite + block + override integration tests
+// ---------------------------------------------------------------------------
+
+async function reinforceMemory(store: MemoryStore, id: string, n: number): Promise<void> {
+  for (let i = 0; i < n; i++) {
+    await store.update(id, { reinforce: true }).catch(() => {});
+  }
+}
+
+async function buildCacheAndWait(hooks: Record<string, unknown>): Promise<void> {
+  const eventHandler = hooks["event"] as Function;
+  await eventHandler({ event: { type: "session.created", properties: { sessionID: "test-sess" } } });
+  await new Promise((resolve) => setTimeout(resolve, 200));
+}
+
+describe("plugin tool.execute.before (Phase 4a rewrite)", () => {
+  it("inhibition 'rewrite' mutates output.args when rule has rewrite metadata", async () => {
+    const { ctx, dbPath } = makeContext({ brain: { inhibition: "rewrite" } });
+    const hooks = await realmemoryPlugin(ctx);
+
+    const store = new MemoryStore({
+      projectId: "test", storagePath: dbPath, embeddingMode: "keyword",
+    } as Record<string, unknown>);
+    await store.init();
+    const stored = await store.store({
+      content: "use npm ci not npm install (lockfile validation fails)",
+      type: "lesson_learned", scope: "global", confidence: 0.9, tags: [],
+      metadata: { command: "npm install", rewrite: { tool: "bash", from: "npm install", to: "npm ci" } },
+    });
+    await reinforceMemory(store, stored.id, 2); // boost weight ≥ 0.5
+
+    await buildCacheAndWait(hooks);
+
+    const beforeHandler = hooks["tool.execute.before"] as Function;
+    const out = { args: { command: "npm install --save foo" } };
+    beforeHandler({ tool: "bash", args: { command: "npm install --save foo" } }, out);
+
+    expect(out.args.command).toBe("npm ci --save foo");
+  });
+
+  it("inhibition 'rewrite' falls back to warn when rule has no rewrite metadata", async () => {
+    const { ctx, dbPath } = makeContext({ brain: { inhibition: "rewrite" } });
+    const hooks = await realmemoryPlugin(ctx);
+
+    const store = new MemoryStore({
+      projectId: "test", storagePath: dbPath, embeddingMode: "keyword",
+    } as Record<string, unknown>);
+    await store.init();
+    await store.store({
+      content: "npm install sometimes fails", type: "lesson_learned",
+      scope: "global", confidence: 0.7, tags: [], metadata: { command: "npm install" },
+    });
+
+    await buildCacheAndWait(hooks);
+
+    const beforeHandler = hooks["tool.execute.before"] as Function;
+    const out = { args: { command: "npm install foo" } };
+    expect(() => beforeHandler({ tool: "bash", args: { command: "npm install foo" } }, out)).not.toThrow();
+    expect(out.args.command).toBe("npm install foo"); // unchanged
+  });
+
+  it("default inhibition (unset) behaves as 'warn' (regression)", async () => {
+    const { ctx, dbPath } = makeContext(); // no inhibition set
+    const hooks = await realmemoryPlugin(ctx);
+
+    const store = new MemoryStore({
+      projectId: "test", storagePath: dbPath, embeddingMode: "keyword",
+    } as Record<string, unknown>);
+    await store.init();
+    await store.store({
+      content: "npm install fails", type: "lesson_learned",
+      scope: "global", confidence: 0.7, tags: [], metadata: { command: "npm install" },
+    });
+
+    await buildCacheAndWait(hooks);
+
+    const beforeHandler = hooks["tool.execute.before"] as Function;
+    const out = { args: { command: "npm install foo" } };
+    expect(() => beforeHandler({ tool: "bash", args: { command: "npm install foo" } }, out)).not.toThrow();
+    expect(out.args.command).toBe("npm install foo"); // no mutation
+  });
+});
+
+describe("plugin tool.execute.before (Phase 4a block)", () => {
+  it("inhibition 'block' throws when rule is safety + high salience", async () => {
+    const { ctx, dbPath } = makeContext({ brain: { inhibition: "block" } });
+    const hooks = await realmemoryPlugin(ctx);
+
+    const store = new MemoryStore({
+      projectId: "test", storagePath: dbPath, embeddingMode: "keyword",
+    } as Record<string, unknown>);
+    await store.init();
+    const stored = await store.store({
+      content: "this command drops the staging DB (2026-06-11)", type: "lesson_learned",
+      scope: "global", confidence: 0.95, category: "safety", tags: [],
+      metadata: { command: "npm run db:reset" },
+    });
+    await reinforceMemory(store, stored.id, 25); // boost weight ≥ 0.8
+
+    await buildCacheAndWait(hooks);
+
+    const beforeHandler = hooks["tool.execute.before"] as Function;
+    expect(() =>
+      beforeHandler({ tool: "bash", args: { command: "npm run db:reset --prod" } }, { args: {} }),
+    ).toThrow(/Blocked by realmemory/);
+  });
+
+  it("block message contains memory ID + retry instruction", async () => {
+    const { ctx, dbPath } = makeContext({ brain: { inhibition: "block" } });
+    const hooks = await realmemoryPlugin(ctx);
+
+    const store = new MemoryStore({
+      projectId: "test", storagePath: dbPath, embeddingMode: "keyword",
+    } as Record<string, unknown>);
+    await store.init();
+    const stored = await store.store({
+      content: "dangerous command", type: "lesson_learned",
+      scope: "global", confidence: 0.95, category: "safety", tags: [],
+      metadata: { command: "rm -rf /" },
+    });
+    await reinforceMemory(store, stored.id, 25);
+
+    await buildCacheAndWait(hooks);
+
+    const beforeHandler = hooks["tool.execute.before"] as Function;
+    let thrownMsg = "";
+    try {
+      beforeHandler({ tool: "bash", args: { command: "rm -rf / --no-preserve-root" } }, { args: {} });
+    } catch (e) {
+      thrownMsg = (e as Error).message;
+    }
+    expect(thrownMsg).toContain(stored.id);
+    expect(thrownMsg).toContain("retry");
+  });
+
+  it("inhibition 'block' falls back to warn for category 'gotcha' (not safety/cost)", async () => {
+    const { ctx, dbPath } = makeContext({ brain: { inhibition: "block" } });
+    const hooks = await realmemoryPlugin(ctx);
+
+    const store = new MemoryStore({
+      projectId: "test", storagePath: dbPath, embeddingMode: "keyword",
+    } as Record<string, unknown>);
+    await store.init();
+    const stored = await store.store({
+      content: "npm install sometimes fails", type: "lesson_learned",
+      scope: "global", confidence: 0.95, category: "gotcha", tags: [],
+      metadata: { command: "npm install" },
+    });
+    await reinforceMemory(store, stored.id, 25);
+
+    await buildCacheAndWait(hooks);
+
+    const beforeHandler = hooks["tool.execute.before"] as Function;
+    expect(() =>
+      beforeHandler({ tool: "bash", args: { command: "npm install foo" } }, { args: {} }),
+    ).not.toThrow(); // no block — falls to warn
+  });
+});
+
+describe("plugin tool.execute.before (Phase 4a override)", () => {
+  it("override: same call after block proceeds without re-blocking", async () => {
+    const { ctx, dbPath } = makeContext({ brain: { inhibition: "block", predictionError: false } });
+    const hooks = await realmemoryPlugin(ctx);
+
+    const store = new MemoryStore({
+      projectId: "test", storagePath: dbPath, embeddingMode: "keyword",
+    } as Record<string, unknown>);
+    await store.init();
+    const stored = await store.store({
+      content: "dangerous command", type: "lesson_learned",
+      scope: "global", confidence: 0.95, category: "safety", tags: [],
+      metadata: { command: "rm -rf /tmp" },
+    });
+    await reinforceMemory(store, stored.id, 25);
+
+    await buildCacheAndWait(hooks);
+
+    const beforeHandler = hooks["tool.execute.before"] as Function;
+    const args = { command: "rm -rf /tmp/test" };
+
+    // First call: should block (throw).
+    expect(() => beforeHandler({ tool: "bash", args }, { args: {} })).toThrow(/Blocked/);
+
+    // Second call (same args): override — should NOT throw.
+    expect(() => beforeHandler({ tool: "bash", args }, { args: {} })).not.toThrow();
+
+    // Give the detached metric recording time.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    // reflex_override metric should be recorded.
+    const summary = await store.getMetricSummary();
+    const overrideMetric = summary.find((m) => m.metric_name.startsWith("reflex_override:"));
+    expect(overrideMetric).toBeDefined();
+  });
+
+  it("override: different call after block clears lastBlock (no false override)", async () => {
+    const { ctx, dbPath } = makeContext({ brain: { inhibition: "block", predictionError: false } });
+    const hooks = await realmemoryPlugin(ctx);
+
+    const store = new MemoryStore({
+      projectId: "test", storagePath: dbPath, embeddingMode: "keyword",
+    } as Record<string, unknown>);
+    await store.init();
+    const stored = await store.store({
+      content: "dangerous command", type: "lesson_learned",
+      scope: "global", confidence: 0.95, category: "safety", tags: [],
+      metadata: { command: "rm -rf /tmp" },
+    });
+    await reinforceMemory(store, stored.id, 25);
+
+    await buildCacheAndWait(hooks);
+
+    const beforeHandler = hooks["tool.execute.before"] as Function;
+
+    // Block on rm -rf /tmp.
+    expect(() =>
+      beforeHandler({ tool: "bash", args: { command: "rm -rf /tmp/test" } }, { args: {} }),
+    ).toThrow(/Blocked/);
+
+    // Different call — should NOT be an override. Should block again (same rule matches).
+    expect(() =>
+      beforeHandler({ tool: "bash", args: { command: "rm -rf /tmp/other" } }, { args: {} }),
+    ).toThrow(/Blocked/);
+
+    // No override metric (the second call was a new block, not an override).
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const summary = await store.getMetricSummary();
+    const overrideMetric = summary.find((m) => m.metric_name.startsWith("reflex_override:"));
+    expect(overrideMetric).toBeUndefined();
+  });
+
+  it("session.idle clears lastBlock (no cross-session stale block)", async () => {
+    const { ctx, dbPath } = makeContext({ brain: { inhibition: "block", predictionError: false } });
+    const hooks = await realmemoryPlugin(ctx);
+
+    const store = new MemoryStore({
+      projectId: "test", storagePath: dbPath, embeddingMode: "keyword",
+    } as Record<string, unknown>);
+    await store.init();
+    const stored = await store.store({
+      content: "dangerous command", type: "lesson_learned",
+      scope: "global", confidence: 0.95, category: "safety", tags: [],
+      metadata: { command: "rm -rf /tmp" },
+    });
+    await reinforceMemory(store, stored.id, 25);
+
+    await buildCacheAndWait(hooks);
+
+    const beforeHandler = hooks["tool.execute.before"] as Function;
+    const eventHandler = hooks["event"] as Function;
+    const args = { command: "rm -rf /tmp/test" };
+
+    // Block.
+    expect(() => beforeHandler({ tool: "bash", args }, { args: {} })).toThrow(/Blocked/);
+
+    // session.idle.
+    await eventHandler({ event: { type: "session.idle", properties: { sessionID: "test-sess" } } });
+
+    // Same call after idle — should block again (lastBlock was cleared, no override).
+    expect(() => beforeHandler({ tool: "bash", args }, { args: {} })).toThrow(/Blocked/);
   });
 });

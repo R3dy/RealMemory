@@ -31,13 +31,15 @@ export interface ReflexRule {
   memoryId: string;
   /** A matcher — either a RegExp (tested against a stringified call) or a predicate function. */
   match: RegExp | ((call: ToolCall) => boolean);
-  /** Phase 1: "warn" only. "rewrite" and "block" are Phase 4 (explicitly out of scope). */
-  action: "warn";
+  /** If present, this rule can rewrite args (deterministic fix). Phase 4a. */
+  rewrite?: (args: Record<string, unknown>) => Record<string, unknown>;
+  /** If true, this rule is eligible to block (category safety|cost). Phase 4a. */
+  blockEligible?: boolean;
   /** The note shown to the model when the rule fires. */
   note: string;
   /** 0..1 — drives ordering (higher = more salient). */
   salience: number;
-  /** 0..1 — the source memory's confidence. */
+  /** 0..1 — the source memory's confidence. Decremented on override (extinction). */
   confidence: number;
 }
 
@@ -47,7 +49,7 @@ export interface ReflexCache {
   rules: ReflexRule[];
   /** Top global user_preference contents (identity block — future use, Phase 3). */
   preferences: string[];
-  /** 0..1 — recent correction/failure density (stub: 0 for Phase 1; Phase 4 populates this). */
+  /** 0..1 — recent correction/failure density (stub: 0 for Phase 1; Phase 5 populates this). */
   arousal: number;
   /** When the cache was built (epoch ms). */
   builtAt: number;
@@ -138,10 +140,36 @@ export function compileRule(memory: Memory): ReflexRule | null {
     ? `${memory.content.slice(0, NOTE_MAX_LENGTH - 3)}...`
     : memory.content;
 
+  // Phase 4a: compile capabilities from memory metadata + category.
+  // rewrite: only from explicit metadata.rewrite { tool, from, to }.
+  let rewrite: ((args: Record<string, unknown>) => Record<string, unknown>) | undefined;
+  const rewriteMeta = (metadata.rewrite ?? null) as
+    | { tool?: string; from?: string; to?: string }
+    | null;
+  if (
+    rewriteMeta &&
+    typeof rewriteMeta.from === "string" &&
+    typeof rewriteMeta.to === "string" &&
+    rewriteMeta.from.length > 0
+  ) {
+    const from = rewriteMeta.from;
+    const to = rewriteMeta.to;
+    rewrite = (args: Record<string, unknown>): Record<string, unknown> => {
+      const cmd = (args as { command?: unknown })?.command;
+      if (typeof cmd !== "string" || !cmd.includes(from)) return args; // no-op if absent (R1-N6)
+      return { ...args, command: cmd.split(from).join(to) };
+    };
+  }
+
+  // blockEligible: only for category safety|cost.
+  const blockEligible =
+    memory.category === "safety" || memory.category === "cost";
+
   return {
     memoryId: memory.id,
     match: matcher,
-    action: "warn",
+    rewrite,
+    blockEligible,
     note,
     salience: Math.max(0, Math.min(1, memory.weight)),
     confidence: Math.max(0, Math.min(1, memory.confidence)),
@@ -184,7 +212,7 @@ export async function buildReflexCache(store: MemoryStore): Promise<ReflexCache>
   return {
     rules: rules.slice(0, REFLEX_RULE_CAP),
     preferences: preferences.slice(0, PREFERENCES_CAP),
-    arousal: 0, // Phase 1 stub — Phase 4 (arousal) populates this
+    arousal: 0, // Phase 1 stub — Phase 5 (arousal) populates this
     builtAt: Date.now(),
   };
 }
@@ -239,4 +267,87 @@ export function addRule(cache: ReflexCache, rule: ReflexRule): void {
   if (cache.rules.length > REFLEX_RULE_CAP) {
     cache.rules.length = REFLEX_RULE_CAP;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 4a: decideAction (pure) + decrementRuleConfidence (extinction)
+// ---------------------------------------------------------------------------
+
+/** Config-controlled inhibition ceiling. Default "warn" (Phase 1 behavior). */
+export type InhibitionLevel = "off" | "warn" | "rewrite" | "block";
+
+/** Confidence gates for each action (R2-C1 fix — makes extinction effective). */
+export const BLOCK_CONFIDENCE_FLOOR = 0.5;
+export const REWRITE_CONFIDENCE_FLOOR = 0.3;
+export const BLOCK_SALIENCE_FLOOR = 0.8;
+export const REWRITE_SALIENCE_FLOOR = 0.5;
+export const OVERRIDE_CONFIDENCE_DEC = 0.2;
+
+/**
+ * Decide the inhibition action for a matched rule, given the config ceiling.
+ *
+ * Pure function — no I/O, no side effects. Reflex path safe (<5ms).
+ *
+ * The config ceiling sets the maximum action allowed:
+ * - "off" → no action
+ * - "warn" → warn only (Phase 1 behavior, regression-free default)
+ * - "rewrite" → warn or rewrite (block not allowed)
+ * - "block" → warn, rewrite, or block (all allowed)
+ *
+ * Block requires salience >= 0.8 AND confidence >= 0.5 AND blockEligible
+ * (category safety|cost). Rewrite requires salience >= 0.5 AND
+ * confidence >= 0.3 AND a rewrite function. The confidence gates (R2-C1)
+ * are what make `decrementRuleConfidence` effective: after 1-3 overrides,
+ * confidence drops below the floor and the action degrades to "warn".
+ */
+export function decideAction(
+  rule: ReflexRule | null,
+  inhibition: InhibitionLevel,
+): "none" | "warn" | "rewrite" | "block" {
+  if (inhibition === "off" || rule === null) return "none";
+  if (inhibition === "warn") return "warn";
+
+  // inhibition is "rewrite" or "block"
+  if (
+    inhibition === "block" &&
+    rule.salience >= BLOCK_SALIENCE_FLOOR &&
+    rule.confidence >= BLOCK_CONFIDENCE_FLOOR &&
+    rule.blockEligible
+  ) {
+    return "block";
+  }
+  if (
+    rule.salience >= REWRITE_SALIENCE_FLOOR &&
+    rule.confidence >= REWRITE_CONFIDENCE_FLOOR &&
+    rule.rewrite
+  ) {
+    return "rewrite";
+  }
+  return "warn";
+}
+
+/**
+ * Decrement a rule's confidence in the in-RAM cache (extinction mechanism).
+ *
+ * Called on the deliberative path (override detection in tool.execute.before's
+ * detached branch). Finds the rule by memoryId, decrements its confidence
+ * (clamped >= 0), and re-sorts the rules array by salience x confidence desc.
+ *
+ * Combined with the confidence gates in `decideAction`, this is what breaks
+ * the block/override alternation loop within a session: after 1-3 overrides
+ * (0.2 each), confidence drops below 0.5 (no more blocks) or 0.3 (no more
+ * rewrites). The rule stays in the cache (it may still warn) but can no
+ * longer change behavior.
+ */
+export function decrementRuleConfidence(
+  cache: ReflexCache,
+  memoryId: string,
+  amount: number,
+): void {
+  const rule = cache.rules.find((r) => r.memoryId === memoryId);
+  if (!rule) return;
+  rule.confidence = Math.max(0, rule.confidence - amount);
+  cache.rules.sort(
+    (a, b) => b.salience * b.confidence - a.salience * a.confidence,
+  );
 }

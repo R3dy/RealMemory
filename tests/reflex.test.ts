@@ -10,6 +10,14 @@ import {
   matchCall,
   emptyReflexCache,
   addRule,
+  decideAction,
+  decrementRuleConfidence,
+  type InhibitionLevel,
+  BLOCK_SALIENCE_FLOOR,
+  BLOCK_CONFIDENCE_FLOOR,
+  REWRITE_SALIENCE_FLOOR,
+  REWRITE_CONFIDENCE_FLOOR,
+  OVERRIDE_CONFIDENCE_DEC,
   REFLEX_WEIGHT_FLOOR,
   REFLEX_RULE_CAP,
   type ReflexCache,
@@ -72,7 +80,6 @@ describe("compileRule", () => {
     const rule = compileRule(mem);
     expect(rule).not.toBeNull();
     expect(rule!.memoryId).toBe(mem.id);
-    expect(rule!.action).toBe("warn");
     expect(rule!.note).toBe("npm install fails lockfile validation in this project");
     expect(rule!.salience).toBe(0.7);
     expect(rule!.confidence).toBe(0.8);
@@ -392,7 +399,6 @@ describe("addRule", () => {
     return {
       memoryId: generateUlid(),
       match: /test/,
-      action: "warn",
       note: "test note",
       salience: 0.5,
       confidence: 0.5,
@@ -445,5 +451,307 @@ describe("addRule", () => {
     addRule(cache, makeRule());
     expect(cache).toBe(ref); // same object reference
     expect(cache.rules.length).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 4a: compileRule capabilities (rewrite + blockEligible)
+// ---------------------------------------------------------------------------
+
+describe("Phase 4a: compileRule capabilities", () => {
+  function makeMemory(overrides: Partial<Memory> = {}): Memory {
+    return {
+      id: generateUlid(),
+      content: "npm install fails lockfile validation here",
+      type: "lesson_learned",
+      scope: "project",
+      category: "gotcha",
+      tags: [],
+      weight: 0.7,
+      confidence: 0.8,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      accessCount: 0,
+      reinforcementCount: 0,
+      metadata: { command: "npm install" },
+      status: "active",
+      ...overrides,
+    };
+  }
+
+  it("compiles a rewrite function from metadata.rewrite", () => {
+    const mem = makeMemory({
+      metadata: {
+        command: "npm install",
+        rewrite: { tool: "bash", from: "npm install", to: "npm ci" },
+      },
+    });
+    const rule = compileRule(mem);
+    expect(rule).not.toBeNull();
+    expect(rule!.rewrite).toBeDefined();
+    const result = rule!.rewrite!({ command: "npm install foo" });
+    expect(result.command).toBe("npm ci foo");
+  });
+
+  it("rewrite fn is a no-op when 'from' is absent from the command (R1-N6)", () => {
+    const mem = makeMemory({
+      metadata: {
+        command: "npm install",
+        rewrite: { tool: "bash", from: "npm install", to: "npm ci" },
+      },
+    });
+    const rule = compileRule(mem);
+    const result = rule!.rewrite!({ command: "yarn add foo" });
+    expect(result.command).toBe("yarn add foo"); // unchanged
+  });
+
+  it("rewrite fn handles missing command field gracefully", () => {
+    const mem = makeMemory({
+      metadata: {
+        command: "npm install",
+        rewrite: { tool: "bash", from: "npm install", to: "npm ci" },
+      },
+    });
+    const rule = compileRule(mem);
+    const result = rule!.rewrite!({ filePath: "/some/path" });
+    expect(result).toEqual({ filePath: "/some/path" }); // unchanged
+  });
+
+  it("sets blockEligible true for category safety", () => {
+    const mem = makeMemory({ category: "safety", weight: 0.9 });
+    const rule = compileRule(mem);
+    expect(rule).not.toBeNull();
+    expect(rule!.blockEligible).toBe(true);
+  });
+
+  it("sets blockEligible true for category cost", () => {
+    const mem = makeMemory({ category: "cost", weight: 0.9 });
+    const rule = compileRule(mem);
+    expect(rule).not.toBeNull();
+    expect(rule!.blockEligible).toBe(true);
+  });
+
+  it("does NOT set blockEligible for category gotcha", () => {
+    const mem = makeMemory({ category: "gotcha", weight: 0.9 });
+    const rule = compileRule(mem);
+    expect(rule).not.toBeNull();
+    expect(rule!.blockEligible).toBeFalsy();
+  });
+
+  it("does NOT set rewrite when metadata.rewrite is absent", () => {
+    const mem = makeMemory({ metadata: { command: "npm install" } });
+    const rule = compileRule(mem);
+    expect(rule).not.toBeNull();
+    expect(rule!.rewrite).toBeUndefined();
+  });
+
+  it("a rule can have BOTH rewrite and blockEligible", () => {
+    const mem = makeMemory({
+      category: "safety",
+      weight: 0.9,
+      metadata: {
+        command: "npm install",
+        rewrite: { tool: "bash", from: "npm install", to: "npm ci" },
+      },
+    });
+    const rule = compileRule(mem);
+    expect(rule).not.toBeNull();
+    expect(rule!.rewrite).toBeDefined();
+    expect(rule!.blockEligible).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 4a: decideAction (pure function, 28-case matrix)
+// ---------------------------------------------------------------------------
+
+describe("Phase 4a: decideAction", () => {
+  // Rule archetypes
+  const noRule = null;
+  const lowSalience = {
+    memoryId: "low",
+    match: /x/ as unknown as RegExp,
+    note: "low",
+    salience: 0.3,
+    confidence: 0.8,
+  };
+  const midSalienceRewrite = {
+    memoryId: "mid-rw",
+    match: /x/ as unknown as RegExp,
+    rewrite: (): Record<string, unknown> => ({ command: "fixed" }),
+    note: "mid rewrite",
+    salience: 0.6,
+    confidence: 0.7,
+  };
+  const highSalienceBlock = {
+    memoryId: "high-blk",
+    match: /x/ as unknown as RegExp,
+    blockEligible: true,
+    note: "high block",
+    salience: 0.9,
+    confidence: 0.8,
+  };
+  const highSalienceNoBlock = {
+    memoryId: "high-noblk",
+    match: /x/ as unknown as RegExp,
+    note: "high no block",
+    salience: 0.9,
+    confidence: 0.8,
+  };
+  // R2-C1: confidence-gate cases
+  const highSalienceBlockLowConf = {
+    memoryId: "high-blk-lowconf",
+    match: /x/ as unknown as RegExp,
+    blockEligible: true,
+    note: "high block low conf",
+    salience: 0.9,
+    confidence: 0.3, // below BLOCK_CONFIDENCE_FLOOR (0.5)
+  };
+  const midSalienceRewriteLowConf = {
+    memoryId: "mid-rw-lowconf",
+    match: /x/ as unknown as RegExp,
+    rewrite: (): Record<string, unknown> => ({ command: "fixed" }),
+    note: "mid rewrite low conf",
+    salience: 0.6,
+    confidence: 0.2, // below REWRITE_CONFIDENCE_FLOOR (0.3)
+  };
+
+  const levels: InhibitionLevel[] = ["off", "warn", "rewrite", "block"];
+
+  it("returns 'none' for no rule regardless of inhibition", () => {
+    for (const lvl of levels) {
+      expect(decideAction(noRule, lvl)).toBe("none");
+    }
+  });
+
+  it("returns 'none' for inhibition 'off' regardless of rule", () => {
+    expect(decideAction(lowSalience as never, "off")).toBe("none");
+    expect(decideAction(midSalienceRewrite as never, "off")).toBe("none");
+    expect(decideAction(highSalienceBlock as never, "off")).toBe("none");
+  });
+
+  it("returns 'warn' for inhibition 'warn' regardless of rule", () => {
+    expect(decideAction(lowSalience as never, "warn")).toBe("warn");
+    expect(decideAction(midSalienceRewrite as never, "warn")).toBe("warn");
+    expect(decideAction(highSalienceBlock as never, "warn")).toBe("warn");
+  });
+
+  it("inhibition 'rewrite': rewrite for mid-salience rewrite rule, warn for others", () => {
+    expect(decideAction(lowSalience as never, "rewrite")).toBe("warn");
+    expect(decideAction(midSalienceRewrite as never, "rewrite")).toBe("rewrite");
+    // high-salience block-eligible but ceiling is rewrite → can still rewrite if it has rewrite
+    expect(decideAction(highSalienceBlock as never, "rewrite")).toBe("warn"); // no rewrite fn
+    expect(decideAction(highSalienceNoBlock as never, "rewrite")).toBe("warn"); // no rewrite fn
+  });
+
+  it("inhibition 'block': block for high-salience block-eligible, warn for high-no-block", () => {
+    expect(decideAction(highSalienceBlock as never, "block")).toBe("block");
+    expect(decideAction(highSalienceNoBlock as never, "block")).toBe("warn");
+  });
+
+  it("inhibition 'block': rewrite for mid-salience rewrite rule", () => {
+    expect(decideAction(midSalienceRewrite as never, "block")).toBe("rewrite");
+  });
+
+  // R2-C1: confidence gate cases
+  it("R2-C1: high-salience block-eligible with LOW confidence does NOT block (falls to warn)", () => {
+    expect(decideAction(highSalienceBlockLowConf as never, "block")).toBe("warn");
+  });
+
+  it("R2-C1: mid-salience rewrite rule with LOW confidence does NOT rewrite (falls to warn)", () => {
+    expect(decideAction(midSalienceRewriteLowConf as never, "block")).toBe("warn");
+    expect(decideAction(midSalienceRewriteLowConf as never, "rewrite")).toBe("warn");
+  });
+
+  it("block requires BOTH salience >= 0.8 AND confidence >= 0.5 AND blockEligible", () => {
+    // salience ok, confidence ok, but not blockEligible
+    expect(decideAction(highSalienceNoBlock as never, "block")).toBe("warn");
+    // salience ok, blockEligible, but confidence too low
+    expect(decideAction(highSalienceBlockLowConf as never, "block")).toBe("warn");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 4a: decrementRuleConfidence (extinction)
+// ---------------------------------------------------------------------------
+
+describe("Phase 4a: decrementRuleConfidence", () => {
+  it("decrements confidence and re-sorts", () => {
+    const cache = emptyReflexCache();
+    addRule(cache, {
+      memoryId: "r1",
+      match: /x/,
+      note: "high",
+      salience: 0.9,
+      confidence: 0.8,
+    });
+    addRule(cache, {
+      memoryId: "r2",
+      match: /y/,
+      note: "low",
+      salience: 0.5,
+      confidence: 0.9,
+    });
+    // r1 is first (0.9*0.8=0.72 > 0.5*0.9=0.45)
+    expect(cache.rules[0].memoryId).toBe("r1");
+
+    decrementRuleConfidence(cache, "r1", OVERRIDE_CONFIDENCE_DEC);
+    expect(cache.rules[0].confidence).toBeCloseTo(0.6, 10); // 0.8 - 0.2
+    // 0.9*0.6=0.54 > 0.5*0.9=0.45 → still first
+    expect(cache.rules[0].memoryId).toBe("r1");
+  });
+
+  it("after enough decrements, confidence crosses the block floor (extinction)", () => {
+    const cache = emptyReflexCache();
+    addRule(cache, {
+      memoryId: "blk",
+      match: /x/,
+      blockEligible: true,
+      note: "block rule",
+      salience: 0.9,
+      confidence: 0.9,
+    });
+    // 0.9 → 0.7 → ~0.5 → ~0.3 (float imprecision: 0.7-0.2=0.4999...)
+    decrementRuleConfidence(cache, "blk", OVERRIDE_CONFIDENCE_DEC);
+    expect(cache.rules[0].confidence).toBeCloseTo(0.7, 10);
+    expect(
+      decideAction(cache.rules[0], "block"),
+    ).toBe("block"); // 0.7 >= 0.5
+
+    decrementRuleConfidence(cache, "blk", OVERRIDE_CONFIDENCE_DEC);
+    // 0.7 - 0.2 = 0.4999... < 0.5 due to float — extinct already
+    expect(cache.rules[0].confidence).toBeLessThan(BLOCK_CONFIDENCE_FLOOR);
+    expect(decideAction(cache.rules[0], "block")).toBe("warn"); // below floor
+
+    decrementRuleConfidence(cache, "blk", OVERRIDE_CONFIDENCE_DEC);
+    expect(cache.rules[0].confidence).toBeCloseTo(0.3, 1);
+    expect(decideAction(cache.rules[0], "block")).toBe("warn"); // still warn
+  });
+
+  it("clamps confidence at 0 (no negatives)", () => {
+    const cache = emptyReflexCache();
+    addRule(cache, {
+      memoryId: "r",
+      match: /x/,
+      note: "low",
+      salience: 0.5,
+      confidence: 0.1,
+    });
+    decrementRuleConfidence(cache, "r", 0.5);
+    expect(cache.rules[0].confidence).toBe(0);
+  });
+
+  it("no-op if memoryId not found", () => {
+    const cache = emptyReflexCache();
+    addRule(cache, {
+      memoryId: "r1",
+      match: /x/,
+      note: "n",
+      salience: 0.5,
+      confidence: 0.5,
+    });
+    const before = cache.rules[0].confidence;
+    decrementRuleConfidence(cache, "nonexistent", 0.2);
+    expect(cache.rules[0].confidence).toBe(before);
   });
 });

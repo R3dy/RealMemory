@@ -2,14 +2,14 @@
 import {
   startBrowserServer,
   startMcpServer
-} from "./chunk-72SK7WEB.js";
+} from "./chunk-727MJKM3.js";
 import {
   printDoctorTable
-} from "./chunk-SXEW6L3Z.js";
+} from "./chunk-YEH47ZG6.js";
 import {
   MemoryStore,
   loadConfig
-} from "./chunk-6SGGXRTZ.js";
+} from "./chunk-P7ZDGXW7.js";
 
 // src/bin.ts
 function parseArgs(argv) {
