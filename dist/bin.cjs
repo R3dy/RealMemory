@@ -459,6 +459,14 @@ function validateConfig(config) {
   if (config.brain?.predictionError !== void 0 && typeof config.brain.predictionError !== "boolean") {
     throw new Error("brain.predictionError must be a boolean");
   }
+  if (config.brain?.workingMemory !== void 0 && typeof config.brain.workingMemory !== "boolean") {
+    throw new Error("brain.workingMemory must be a boolean");
+  }
+  if (config.brain?.workingMemoryTokens !== void 0) {
+    if (typeof config.brain.workingMemoryTokens !== "number" || config.brain.workingMemoryTokens < 200 || config.brain.workingMemoryTokens > 4e3) {
+      throw new Error("brain.workingMemoryTokens must be a number in [200, 4000]");
+    }
+  }
 }
 function readJsonFile(path) {
   const content = (0, import_node_fs.readFileSync)(path, "utf-8");

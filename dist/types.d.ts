@@ -354,6 +354,20 @@ interface MemoryStoreConfig {
          * behavior preserved). Gated on `!== false`, mirroring the `reflex` pattern.
          */
         predictionError?: boolean;
+        /**
+         * Synthetic-brain Phase 3: working-memory window. Default true (!== false gate).
+         * When true, the transform hook assembles a budgeted, slotted window from
+         * staged slot data. When false, no window is assembled (pendingWarnNote
+         * still delivered independently). Note: design doc §5's config block lists
+         * workingMemoryTokens but not this boolean — the gate follows the
+         * established brain.reflex / brain.predictionError pattern.
+         */
+        workingMemory?: boolean;
+        /**
+         * Synthetic-brain Phase 3: total token budget for the working-memory window.
+         * Default 800. Validated [200, 4000].
+         */
+        workingMemoryTokens?: number;
     };
 }
 /**

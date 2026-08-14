@@ -163,6 +163,22 @@ export function validateConfig(config: MemoryStoreConfig): void {
   ) {
     throw new Error("brain.predictionError must be a boolean");
   }
+  // Synthetic-brain Phase 3: brain.workingMemory + workingMemoryTokens validation.
+  if (
+    config.brain?.workingMemory !== undefined &&
+    typeof config.brain.workingMemory !== "boolean"
+  ) {
+    throw new Error("brain.workingMemory must be a boolean");
+  }
+  if (config.brain?.workingMemoryTokens !== undefined) {
+    if (
+      typeof config.brain.workingMemoryTokens !== "number" ||
+      config.brain.workingMemoryTokens < 200 ||
+      config.brain.workingMemoryTokens > 4000
+    ) {
+      throw new Error("brain.workingMemoryTokens must be a number in [200, 4000]");
+    }
+  }
 }
 
 function readJsonFile(path: string): Record<string, unknown> {

@@ -714,8 +714,11 @@ describe("deduplication", () => {
       ) => Promise<void>
     )({}, { system });
     expect(system.length).toBe(3);
-    expect(system[2]).toContain("## Relevant memories from previous sessions");
+    expect(system[2]).toContain("## Working memory");
 
+    // Phase 3: the working-memory window is rebuilt every turn (taskFrame
+    // persists until overwritten by the next chat.message or cleared on
+    // compaction). The second transform still produces a window.
     const system2: string[] = ["You are an agent."];
     await (
       hooks["experimental.chat.system.transform"] as (
@@ -723,7 +726,7 @@ describe("deduplication", () => {
         output: { system: string[] },
       ) => Promise<void>
     )({}, { system: system2 });
-    expect(system2.length).toBe(1);
+    expect(system2.length).toBe(2); // original + window (sentinel not re-pushed)
   });
 });
 
@@ -861,10 +864,11 @@ describe("system prompt injection", () => {
       ) => Promise<void>
     )({}, { system });
     expect(system.length).toBe(3);
-    expect(system[2]).toContain("## Relevant memories from previous sessions");
+    expect(system[2]).toContain("## Working memory");
     expect(system[2]).toContain("uses SQLite");
 
-    // The staged block is cleared after delivery — nothing is injected again.
+    // Phase 3: the working-memory window persists across transforms (rebuilt
+    // every turn from staged slot data). The second transform still has the window.
     const system2: string[] = ["You are an agent."];
     await (
       hooks["experimental.chat.system.transform"] as (
@@ -872,7 +876,7 @@ describe("system prompt injection", () => {
         output: { system: string[] },
       ) => Promise<void>
     )({}, { system: system2 });
-    expect(system2.length).toBe(1);
+    expect(system2.length).toBe(2); // original + window (sentinel not re-pushed)
   });
 
   it("delivers chat.message recall results into output.system", async () => {

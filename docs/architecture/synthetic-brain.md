@@ -197,8 +197,8 @@ Replace it with a **working-memory window** rebuilt every turn under an explicit
 |---|---|---|---|
 | Identity | ~150 tok | Top global `user_preference` by weight | Session start; sticky |
 | Task frame | ~200 tok | Memories matching the current goal | On intent change |
-| Active lessons | ~300 tok | High-salience `lesson_learned` for tools/files in play | Every turn |
-| Open predictions | ~150 tok | Unresolved predictions from §4.5 | Every turn |
+| Active lessons | ~300 tok | High-salience `lesson_learned` by weight (top-N); tool-specific matching is the ReflexCache's job (Phase 1) | Every turn |
+| Open predictions | ~150 tok | Recently-surprising outcomes (resolved predictions with surprise ≥ 0.2); genuinely-open predictions are near-empty at transform time because `tool.execute.after` resolves within the turn | Every turn (consume-and-clear at transform) |
 
 Eviction is by `salience × recency-of-use`, i.e. the same weighting the store already computes.
 Rebuild the *whole* window each transform rather than appending deltas, so what the model sees is

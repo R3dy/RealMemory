@@ -40,6 +40,11 @@ import {
   parseSummarizationResponse,
 } from "./summarize";
 import type { MemoryStoreConfig, RecallResult, SummaryProviderConfig } from "./types";
+import {
+  assembleWorkingMemory,
+  emptySlots,
+  type WorkingMemorySlots,
+} from "./working-memory";
 
 /** Shape of the OpenCode plugin context object passed to the plugin entry point. */
 export interface OpenCodePluginContext {
@@ -62,8 +67,9 @@ interface PluginState {
   store: MemoryStore | null;
   config: MemoryStoreConfig | null;
   injectedMemoryIds: Set<string>;
-  /** Formatted recall block staged for the next chat system prompt. */
-  pendingInjection: string | null;
+  /** Synthetic-brain Phase 3: working-memory slots staged by detached hooks.
+   *  Replaces the old pendingInjection field. */
+  workingMemory: WorkingMemorySlots;
   initialized: boolean;
   /** Shared in-flight init promise so concurrent detached hooks init once. */
   initPromise: Promise<MemoryStore> | null;
@@ -269,7 +275,7 @@ export default async function realmemoryPlugin(
       projectId: deriveProjectId(ctx.directory),
     },
     injectedMemoryIds: new Set(),
-    pendingInjection: null,
+    workingMemory: emptySlots(),
     initialized: false,
     initPromise: null,
     lastUserText: null,
@@ -327,6 +333,36 @@ export default async function realmemoryPlugin(
     }
   }
 
+  /**
+   * Phase 3: record per-slot working-memory metrics (detached, INV-017).
+   * Not exported. Records `working_memory:<slot>` for each non-empty slot.
+   */
+  function recordWorkingMemoryMetrics(
+    getStore: () => Promise<MemoryStore>,
+    sessionId: string | null,
+    slots: import("./working-memory").WorkingMemorySlots,
+  ): void {
+    void (async () => {
+      try {
+        const store = await getStore();
+        const slotNames: Array<[string, { content: string }]> = [
+          ["identity", slots.identity],
+          ["taskFrame", slots.taskFrame],
+          ["queriedLessons", slots.queriedLessons],
+          ["freshLessons", slots.freshLessons],
+          ["openPredictions", slots.openPredictions],
+        ];
+        for (const [name, slot] of slotNames) {
+          if (slot.content.length > 0) {
+            await store.recordMetric(`working_memory:${name}`, 1, sessionId ?? undefined);
+          }
+        }
+      } catch {
+        // Metric recording is fire-and-forget — never throw.
+      }
+    })();
+  }
+
   return {
     // On session events: auto-recall (created) and auto-summarize (idle).
     event: async ({
@@ -356,11 +392,39 @@ export default async function realmemoryPlugin(
             traverse: true,
           });
           // Mark these as delivered so we don't re-inject them later, and
-          // stage the formatted block for the next system prompt.
+          // stage them in the working-memory taskFrame slot.
           results.forEach((r) => state.injectedMemoryIds.add(r.memory.id));
           if (results.length > 0) {
-            state.pendingInjection = formatRecallResults(results);
+            state.workingMemory.taskFrame = {
+              content: formatRecallResults(results),
+              memoryIds: results.map((r) => r.memory.id),
+            };
             await log("info", `Auto-recalled ${results.length} memories for new session`);
+          }
+
+          // ----- Synthetic-brain Phase 3: stage identity slot (sticky) -----
+          // Top global user_preference by weight. Set once at session start.
+          // Gated on brain.workingMemory (defaults true).
+          const brainConfigWM = state.config as { brain?: { workingMemory?: boolean } };
+          if (brainConfigWM.brain?.workingMemory !== false) {
+            try {
+              const idResults = await store.search({
+                scope: "global",
+                types: ["user_preference"],
+                sortBy: "weight",
+                sortOrder: "desc",
+                limit: 1,
+              });
+              if (idResults.memories.length > 0) {
+                const m = idResults.memories[0];
+                state.workingMemory.identity = {
+                  content: m.content,
+                  memoryIds: [m.id],
+                };
+              }
+            } catch {
+              // Identity query failure is non-fatal — the slot stays empty.
+            }
           }
         } catch (error) {
           await log(
@@ -780,6 +844,26 @@ export default async function realmemoryPlugin(
                 surprise,
                 encodedMemoryId,
               };
+
+              // ----- Synthetic-brain Phase 3: stage freshLessons + openPredictions -----
+              // C4 fix: freshLessons is a separate sub-slot (assignment, NOT prepend).
+              // Same-turn overwrite is intended — two surprising outcomes in one turn
+              // leave only the last. The earlier ones are encoded by Phase 2 and surface
+              // via queriedLessons on later turns. Do NOT "fix" into an append.
+              if (shouldEncode(surprise) && encodedMemoryId) {
+                state.workingMemory.freshLessons = {
+                  content: `- ${describe({ tool: input.tool, args }, actual)}`,
+                  memoryIds: [encodedMemoryId],
+                };
+              }
+              // C5 fix / 2-C1 fix: stage openPredictions for delivery on the NEXT
+              // transform (consume-and-clear at the transform, NOT at chat.message).
+              if (surprise >= 0.2) {
+                state.workingMemory.openPredictions = {
+                  content: `**Prediction error** (${input.tool}): expected ${actual.success ? "failure" : "success"}, observed ${actual.success ? "success" : "error"} (surprise=${surprise.toFixed(2)})`,
+                  memoryIds: encodedMemoryId ? [encodedMemoryId] : [],
+                };
+              }
             }
           }
         } catch (error) {
@@ -917,17 +1001,46 @@ export default async function realmemoryPlugin(
             traverse: true,
           });
 
-          // Deduplicate: skip memories already delivered this session.
+          // Deduplicate: skip memories already delivered this compaction window.
           const newResults = results.filter(
             (r) => !state.injectedMemoryIds.has(r.memory.id),
           );
-          if (newResults.length === 0) return;
+          if (newResults.length > 0) {
+            newResults.forEach((r) => state.injectedMemoryIds.add(r.memory.id));
+            // Phase 3: stage into workingMemory.taskFrame (replaces pendingInjection).
+            state.workingMemory.taskFrame = {
+              content: formatRecallResults(newResults),
+              memoryIds: newResults.map((r) => r.memory.id),
+            };
+            await log("info", `Auto-recalled ${newResults.length} memories for user message`);
+          }
 
-          newResults.forEach((r) => state.injectedMemoryIds.add(r.memory.id));
-          // C2 fix: track which IDs were delivered THIS TURN for the hit-rate metric.
-          state.lastInjectedMemoryIds = newResults.map((r) => r.memory.id).slice(-5);
-          state.pendingInjection = formatRecallResults(newResults);
-          await log("info", `Auto-recalled ${newResults.length} memories for user message`);
+          // ----- Synthetic-brain Phase 3: stage queriedLessons (detached) -----
+          // Top-N lesson_learned by weight. Gated on brain.workingMemory.
+          // Tool-specific matching is the ReflexCache's job (Phase 1); the
+          // working-memory window's active-lessons slot is broader salience-weighted context.
+          const brainConfigWM = state.config as { brain?: { workingMemory?: boolean } };
+          if (brainConfigWM.brain?.workingMemory !== false) {
+            try {
+              const lessonResults = await store.search({
+                types: ["lesson_learned"],
+                scope: "all",
+                minWeight: 0.3,
+                sortBy: "weight",
+                sortOrder: "desc",
+                limit: 5,
+              });
+              if (lessonResults.memories.length > 0) {
+                const lessonTexts = lessonResults.memories.map((m) => `- ${m.content.slice(0, 200)}`);
+                state.workingMemory.queriedLessons = {
+                  content: lessonTexts.join("\n"),
+                  memoryIds: lessonResults.memories.map((m) => m.id),
+                };
+              }
+            } catch {
+              // Lesson query failure is non-fatal — the slot stays empty.
+            }
+          }
         } catch (error) {
           await log(
             "error",
@@ -940,44 +1053,71 @@ export default async function realmemoryPlugin(
     // Delivery mechanism: OpenCode builds the LLM request (system prompt)
     // after a user message is received, so any recall block staged by
     // `session.created` or `chat.message` is appended to the system prompt
-    // here — and cleared so it is never injected twice.
+    // here. Phase 3: replaced the one-shot pendingInjection with a budgeted,
+    // slotted working-memory window rebuilt every turn.
     "experimental.chat.system.transform": (
       _input: unknown,
       output: { system?: string[] },
     ) => {
       // Phase 0 probe — runs on EVERY transform fire, independent of
-      // pendingInjection. Sentinel is pushed once per session (guarded inside
-      // pushSentinel). MUST be before the pendingInjection early return so
-      // zero-recall sessions still produce a landing check.
+      // the working-memory window. Sentinel is pushed once per session.
       recordHookFired(getStore, state.probe, "experimental.chat.system.transform");
       const r = pushSentinel(state.probe, output);
-      // pushSentinel is PURE: it does not touch the store. The handler records
-      // the negative signal when the post-push assertion fails (the host handed
-      // us a frozen/replace array that silently dropped the push).
       if (r.pushed && !r.assertionOk) {
         recordLandsOutcome(getStore, state.probe, 0);
       }
 
-      // Phase 1: deliver both pendingInjection (recall block) and pendingWarnNote
-      // (reflex warn). Two separate fields avoid the race where chat.message's
-      // detached recall overwrites pendingInjection after tool.execute.before
-      // queued a warn note.
-      if (!state.pendingInjection && !state.pendingWarnNote) return;
       if (!Array.isArray(output?.system)) {
-        // Defensive: OpenCode always sends `system: string[]`; if it does not,
-        // drop the staged blocks rather than crashing the chat request.
-        state.pendingInjection = null;
+        // Defensive: clear pendingWarnNote even on the not-an-array path
+        // (C2 fix — matches the old plugin.ts defensive clear).
         state.pendingWarnNote = null;
         return;
       }
-      if (state.pendingInjection) {
-        output.system.push(state.pendingInjection);
-        // C2 fix: stash the IDs delivered THIS TURN before clearing pendingInjection.
-        state.lastInjectedMemoryIds = Array.from(state.injectedMemoryIds).slice(-5);
-        state.pendingInjection = null;
+
+      const brainConfig = state.config as {
+        brain?: { workingMemory?: boolean; workingMemoryTokens?: number };
+      };
+
+      if (brainConfig.brain?.workingMemory === false) {
+        // Phase 3 disabled — deliver pendingWarnNote independently (C2 fix).
+        // Warn-note delivery is gated by brain.inhibition, NOT brain.workingMemory.
+        if (state.pendingWarnNote) {
+          output.system.push(state.pendingWarnNote);
+          state.pendingWarnNote = null;
+        }
+        return;
       }
-      if (state.pendingWarnNote) {
-        output.system.push(state.pendingWarnNote);
+
+      // Phase 3: assemble working-memory window
+      const { formatted, deliveredMemoryIds } = assembleWorkingMemory(
+        state.workingMemory,
+        state.pendingWarnNote,
+        { workingMemoryTokens: brainConfig.brain?.workingMemoryTokens },
+      );
+
+      if (formatted) {
+        output.system.push(formatted);
+        // C3 fix: set lastInjectedMemoryIds from taskFrame IDs ONLY (not the union
+        // of all slots). Preserves recall_hit_rate semantics.
+        // 2-C6 fix: the chat.message staging-time write of lastInjectedMemoryIds
+        // is removed (single writer at delivery — the transform).
+        state.lastInjectedMemoryIds = state.workingMemory.taskFrame.memoryIds.slice(-5);
+        // Track delivered IDs for the compaction-scoped dedup.
+        deliveredMemoryIds.forEach((id) => state.injectedMemoryIds.add(id));
+        // 2-C5 fix: record per-slot metrics by passing the slots object.
+        // Helper is detached (INV-017), lives in plugin.ts, not exported.
+        recordWorkingMemoryMetrics(getStore, state.sessionId, state.workingMemory);
+      }
+
+      // 2-C1 fix: consume-and-clear openPredictions after assembly (delivery-then-
+      // clear, mirroring pendingInjection). A surprise from turn N's tool loop is
+      // delivered on turn N+1's transform and cleared here.
+      state.workingMemory.openPredictions = { content: "", memoryIds: [] };
+
+      // Clear pendingWarnNote (consumed by the window — C1 fix: only clear when
+      // the window was assembled and the warn note was included in it. If formatted
+      // is null AND warn note is non-null, the warn note wasn't delivered — don't clear.)
+      if (formatted) {
         state.pendingWarnNote = null;
       }
     },
@@ -990,6 +1130,14 @@ export default async function realmemoryPlugin(
     "experimental.session.compacting": () => {
       // Phase 0 probe: record fire.
       recordHookFired(getStore, state.probe, "experimental.session.compacting");
+
+      // Phase 3: clear injectedMemoryIds (re-injectable after compaction) +
+      // clear stale slots (force re-query on next chat.message). Keep identity (sticky).
+      state.injectedMemoryIds.clear();
+      state.workingMemory.taskFrame = { content: "", memoryIds: [] };
+      state.workingMemory.queriedLessons = { content: "", memoryIds: [] };
+      state.workingMemory.freshLessons = { content: "", memoryIds: [] };
+      state.workingMemory.openPredictions = { content: "", memoryIds: [] };
 
       // Detached hygiene (INV-017). Runs on context compaction.
       void (async () => {
