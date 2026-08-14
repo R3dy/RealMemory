@@ -15,7 +15,7 @@ autonomous_mode: true
 | 2 Planning | COMPLETE | docs/api-design.md + 5 ADRs |
 | 3 Solutioning | COMPLETE | docs/solutioning/epics.md + backlog.md + dependency-graph.md |
 | 4 Implementation | COMPLETE | 20 stories, 265 tests, all merged to main |
-| 5 Launch | COMPLETE | v0.8.0 — built Aug 13 2026; brain-loop ACTIVE in host OpenCode; synthetic-brain Phase 0 + Phase 1 + Phase 2 shipped. Distributed via git-install (`realmemory@git+https://github.com/R3dy/RealMemory.git`) — npm publish is OFF the table (Royce has no npm login). |
+| 5 Launch | COMPLETE | v0.9.0 — built Aug 13 2026; brain-loop ACTIVE in host OpenCode; synthetic-brain Phase 0 + Phase 1 + Phase 2 + Phase 3 shipped. Distributed via git-install (`realmemory@git+https://github.com/R3dy/RealMemory.git`) — npm publish is OFF the table (Royce has no npm login). |
 
 ## Plugin status (live in this environment)
 
@@ -42,11 +42,18 @@ autonomous_mode: true
 
 ## Current Step
 
-**v0.8.0 built + live; synthetic-brain Phase 2 (prediction error) shipped.** Issue #34 shipped (PR #35, merge `838b423`, tag `issue-34`). The predict→compare→encode loop is live: `tool.execute.before` stashes a prediction (reflex-path, <5ms), `tool.execute.after` computes surprise and encodes/reinforces accordingly (deliberative-path, detached). 619 tests pass. **Royce must restart OpenCode** for the v0.8.0 plugin to take effect — after restart, surprising tool outcomes will produce `prediction_error:<bin>` metrics and high-salience `lesson_learned` encodes. Next: Phase 3 (working-memory window — `docs/architecture/synthetic-brain.md` §4.2).
+**v0.9.0 built + live; synthetic-brain Phase 3 (working-memory window) shipped.** Issue #36 shipped (PR #37, merge `14a9903`, tag `issue-36`). The transform hook now assembles a budgeted, slotted, rebuilt-per-turn working-memory window from staged slot data (identity, taskFrame, queriedLessons, freshLessons, openPredictions). `injectedMemoryIds` cleared on `session.compacting` (re-injectable after compaction). 644 tests (639 pass + 5 pre-existing EADDRINUSE). **Royce must restart OpenCode** for the v0.9.0 plugin to take effect — after restart, the working-memory window will appear in system prompts with `## Working memory` header. Next: Phase 4 (`rewrite` + `permission.ask` — high-risk, opt-in, default off) or Phase 5 (arousal + `tool.definition`).
 
 ## Agile increments (post-launch)
 
-### Issue #34 — Synthetic-brain Phase 2: prediction error (surprise-driven encoding) (2026-08-13)
+### Issue #36 — Synthetic-brain Phase 3: working-memory window (budgeted slotted injection) (2026-08-13)
+- **Status:** CLOSED (PR #37 squash merge `14a9903`, tag `issue-36`)
+- **What:** Implemented Phase 3 of the synthetic-brain design. New `src/working-memory.ts` — `assembleWorkingMemory` (pure function, no I/O), `WorkingMemorySlots` (5 slots: identity, taskFrame, queriedLessons, freshLessons, openPredictions), `estimateTokens` (zero-dep heuristic, chars/4), `SLOT_BUDGETS` (150/200/300/150), `emptySlot`/`emptySlots`. Token budget enforcement with protected identity/taskFrame, trim order openPredictions→queriedLessons→freshLessons. Plugin state: `pendingInjection` replaced by `workingMemory: WorkingMemorySlots`. `injectedMemoryIds` cleared on `experimental.session.compacting` (re-injectable after compaction — the core fix for anterograde amnesia). session.created stages identity (top global user_preference via `store.search`) + taskFrame. chat.message stages taskFrame (recall) + queriedLessons (top-N lesson_learned by weight). tool.execute.after stages freshLessons (encoded lesson — separate sub-slot, C4 race fix) + openPredictions (surprising outcome ≥0.2 — consume-and-clear at transform, 2-C1 lifecycle fix). Transform hook: assembles window from staged slots + pendingWarnNote. Warn note delivered even when all slots empty (C1 fix). `brain.workingMemory===false` delivers warn note independently (C2 fix). `lastInjectedMemoryIds` from taskFrame IDs only (C3 fix — preserves recall_hit_rate). Config: `brain.workingMemory` (default true, `!== false` gate) + `brain.workingMemoryTokens` (default 800, validated [200,4000]). Metrics: `working_memory:<slot>` (detached). Design doc §4.2 synced to as-built definitions.
+- **Pipeline:** anymake-agile — Cartographer intent layer fresh (HEAD `9e4ce8b`, ADR-010 + INV-017 already reflected). Solution Architect plan written directly (507 lines, 4 stories). Plan Reviewer: R1 NEEDS CHANGES (7 blocking + 9 non-blocking — warn note dropped, wrong gate, recall_hit_rate blast radius, two-writer race, openPredictions lifecycle, SearchQuery API mismatch, test baseline wrong), R2 NEEDS CHANGES (1 blocking — openPredictions cleared before delivery + 7 non-blocking), R3 NEEDS CHANGES (1 blocking — Story 36.2 stale criterion + 1 non-blocking — trim order not propagated), R4 APPROVED. Product Owner Proxy: R1 ESCALATE (self-declared Approved without R4), R2 APPROVED (7/7). Direct build (per plan thoroughness + sub-agent fragility lesson).
+- **Tests:** 644 total (639 pass + 5 pre-existing EADDRINUSE). 21 new (15 working-memory unit + 6 plugin integration). 6 existing test files updated (header string `## Relevant memories` → `## Working memory`, `pendingInjection` references, delivery behavior — window persists across transforms vs old one-shot).
+- **Version:** 0.8.0 → 0.9.0 (MINOR — additive feature, no breaking change; pre-1.0 semver per ADR-004).
+- **Intent layer:** ADR-010/INV-017 (two-pathway) — transform hook stays synchronous pure-RAM assembly, no I/O. ADR-008 (plugin internal, not public API). INV-014 (zero new deps). INV-015 (no breaking API — `pendingInjection` is private). INV-005 (no schema migration). INV-019 (dist/ committed, rides the merge).
+- **Revert:** `git revert -m 1 14a9903` (additive: new file + metric rows + in-RAM state; no migration down. `pendingInjection` restored by the revert. Encoded memories from Phase 2 are real and stay.)
 - **Status:** CLOSED (PR #35 squash merge `838b423`, tag `issue-34`)
 - **What:** Implemented Phase 2 of the synthetic-brain design. New `src/predict.ts` — `predictOutcome` (reflex-path, cache-only, <5ms — consumes the already-matched Phase 1 rule; null rule → uncertain default `{willSucceed:true, confidence:0.5}`), `classifyOutcome` (reuses `isErrorResult` for bash, defensive for other tools), `computeSurprise` (`|actual - expected|`, 0..1), `shouldEncode` (≥0.2 threshold), `surpriseBin` (low/med/high), `describe` (human-readable lesson content), `hashArgs` (stable JSON-stringify for call ID synthesis), `consumePrediction` (full `tool:argsHash:` prefix match with fallback — C4 interleaving fix). `src/reflex.ts` `addRule` (mutate cache in place, re-sort, trim to cap — immediate-reflex on strong surprise >0.7). Plugin wiring: `tool.execute.before` restructured (C1 — predict+stash runs for BOTH match and no-match, gated only on `brain.predictionError`), `tool.execute.after` dual-gated (C2 — `autoCapture && predictionError` both off → short-circuit; legacy capture gated on `autoCapture`; prediction block gated on `predictionError`), `chat.message` correction via `lastPredictionOutcome` (C3 — `pendingPredictions` is empty by `chat.message` time; consume the outcome field instead, double-encode avoidance by reinforcing the already-encoded row), `session.idle` leak sweep. Config: `brain.predictionError: true` (default via `!== false` gate). Metric: `prediction_error:<bin>` via `get_metrics` MCP tool.
 - **Pipeline:** anymake-agile — Cartographer refreshed intent layer (ADR-010 → INV-017 + DECISIONS.md), Solution Architect plan (470 lines, round 2 after R1 NEEDS CHANGES with 6 blocking + 2 non-blocking comments — all in the wiring, substrate claims verified correct), Plan Reviewer R2 APPROVED (4 non-blocking nits), Product Owner Proxy APPROVED 6/6. Direct build (per plan thoroughness + sub-agent fragility lesson).
@@ -167,27 +174,30 @@ autonomous_mode: true
 - **Follow-ups identified:** (a) domain backfill on 11 undefined-domain memories, (b) per-project architecture facts for realvol/realcode/basecamp, (c) session summaries for more high-cost sessions, (d) exhaustive pass over remaining ~1600 sessions (the methodology is repeatable).
 
 resume_next: >
-  STATUS (Aug 13 2026): realmemory v0.8.0 — synthetic-brain Phase 2
-  shipped (issue #34, PR #35, merge 838b423, tag issue-34). Prediction
-  error (surprise-driven encoding) is live. 619 tests pass. Royce must
-  restart OpenCode for the instrumented plugin to take effect — after
-  restart, surprising tool outcomes will produce prediction_error:<bin>
-  metrics and high-salience lesson_learned encodes.
+  STATUS (Aug 13 2026): realmemory v0.9.0 — synthetic-brain Phase 3
+  (working-memory window) shipped (issue #36, PR #37, merge 14a9903,
+  tag issue-36). Budgeted, slotted, rebuilt-per-turn injection replaces
+  the old one-shot pendingInjection. injectedMemoryIds cleared on
+  compaction (re-injectable). 644 tests (639 pass + 5 EADDRINUSE).
+  Royce must restart OpenCode for the v0.9.0 plugin to take effect.
 
   REMAINING (in priority order):
-  (1) Royce restarts OpenCode — picks up the v0.8.0 plugin. After a
-  session, check get_metrics for prediction_error:<bin> rows.
-  (2) Synthetic-brain Phase 3 (working-memory window) — the next entry
-  point. The design doc is at `docs/architecture/synthetic-brain.md`
-  §4.2. Budgeted slotted injection rebuilt per turn under a token budget.
-  (3) Cartographer refresh — ADR-010 is now reflected in DECISIONS.md +
-  INV-017 (done by the #34 Cartographer run). ADR-009 `id` amendment
-  still pending (from issue #28).
-  (4) npm publish v0.8.0 — requires Royce's npm login. CRITICAL: add
+  (1) Royce restarts OpenCode — picks up the v0.9.0 plugin. After a
+  session, check get_metrics for working_memory:<slot> rows + verify
+  ## Working memory appears in system prompts.
+  (2) Synthetic-brain Phase 4 (rewrite + permission.ask) — HIGH RISK,
+  opt-in, default off. Memory changes behavior, not just context.
+  Design doc §4.3, §5.
+  (3) Synthetic-brain Phase 5 (arousal + tool.definition) — LOW risk.
+  chat.params modulation + memory notes in tool schemas. §4.4.
+  (4) Cartographer refresh — ADR-010 is reflected in DECISIONS.md +
+  INV-017. Phase 3 changes are internal (no new ADR needed). ADR-009
+  `id` amendment still pending (from issue #28).
+  (5) npm publish v0.9.0 — requires Royce's npm login. CRITICAL: add
   "skills" and "scripts" to package.json files[] before publishing.
-  (5) Amend ADR-009 to document the `id` requirement for file/path
+  (6) Amend ADR-009 to document the `id` requirement for file/path
   plugins (from issue #28 — still pending).
-  (6) PARKING_LOT drift items from #22: Drift #5 (secrets-before-LLM),
+  (7) PARKING_LOT drift items from #22: Drift #5 (secrets-before-LLM),
   #6 (zod 4th dep), #7 (schema-v3 ADR-less). Separate issues.
-  (7) Domain backfill: 11 memories have undefined domain.
-  (8) Consider re-adding a future Node LTS to CI.
+  (8) Domain backfill: 11 memories have undefined domain.
+  (9) Consider re-adding a future Node LTS to CI.
