@@ -383,12 +383,14 @@ export interface MemoryStoreConfig {
    * Synthetic-brain Phase 1: reflex cache + inhibition.
    * When `reflex` is true (default), build ReflexCache at session start and
    * wire `tool.execute.before`. When false, no inhibition (today's behavior).
-   * `inhibition` controls the action: "off" (no-op), "warn" (advisory note,
-   * default). "rewrite" and "block" are Phase 4 (not valid values here).
+   * `inhibition` controls the action ceiling: "off" (no-op), "warn" (advisory
+   * note, default), "rewrite" (mutate tool args, Phase 4a), "block" (abort the
+   * call, Phase 4a). "rewrite" and "block" are opt-in — default "warn" is
+   * regression-free (Phase 1 behavior).
    */
   brain?: {
     reflex?: boolean;
-    inhibition?: "off" | "warn";
+    inhibition?: "off" | "warn" | "rewrite" | "block";
     /**
      * Synthetic-brain Phase 2: prediction error (surprise-driven encoding).
      * When `true` (effective default — the field's absence enables the loop),

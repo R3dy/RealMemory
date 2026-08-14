@@ -163,6 +163,13 @@ export function validateConfig(config: MemoryStoreConfig): void {
   ) {
     throw new Error("brain.predictionError must be a boolean");
   }
+  // Synthetic-brain Phase 4a: brain.inhibition validation.
+  if (config.brain?.inhibition !== undefined) {
+    const valid = ["off", "warn", "rewrite", "block"];
+    if (!valid.includes(config.brain.inhibition)) {
+      throw new Error(`brain.inhibition must be one of: ${valid.join(", ")}`);
+    }
+  }
   // Synthetic-brain Phase 3: brain.workingMemory + workingMemoryTokens validation.
   if (
     config.brain?.workingMemory !== undefined &&

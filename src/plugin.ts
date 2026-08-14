@@ -19,8 +19,12 @@ import {
   emptyReflexCache,
   addRule,
   compileRule,
+  decideAction,
+  decrementRuleConfidence,
   type ReflexCache,
   type ToolCall,
+  type InhibitionLevel,
+  OVERRIDE_CONFIDENCE_DEC,
 } from "./reflex";
 import {
   predictOutcome,
@@ -30,6 +34,7 @@ import {
   surpriseBin,
   describe,
   hashArgs,
+  sortKeys,
   consumePrediction,
   type Prediction,
   type Outcome,
@@ -104,6 +109,17 @@ interface PluginState {
     surprise: number;
     encodedMemoryId: string | null;
   } | null;
+  /** Synthetic-brain Phase 4a: set when a `block` action fires. The next
+   *  tool.execute.before checks whether the model retried the same call
+   *  (override = exception). Cleared on a different call, on session.idle,
+   *  or on override (consumed). Uses UNTRUNCATED argsKey (not hashArgs,
+   *  which truncates at 200 chars — R1-C3). */
+  lastBlock: {
+    tool: string;
+    argsKey: string;
+    memoryId: string;
+    confidence: number;
+  } | null;
 }
 
 /** Check if a file path looks like a config, schema, or route file worth capturing. */
@@ -136,6 +152,29 @@ export function isErrorResult(result: string): boolean {
     /traceback/i,
   ];
   return errorPatterns.some((p) => p.test(result));
+}
+
+/**
+ * Synthetic-brain Phase 4a: build the block exception message.
+ * The thrown message IS the teaching signal — names the memory, the consequence,
+ * and tells the model how to override (retry = exception).
+ */
+export function blockMessage(rule: { note: string; memoryId: string }): string {
+  return `Blocked by realmemory: ${rule.note} (memory ${rule.memoryId}). If this is intentional, retry the command and it will be recorded as an exception.`;
+}
+
+/**
+ * Synthetic-brain Phase 4a: untruncated args key for override detection.
+ * Uses sortKeys (exported from predict.ts) for deterministic key order, then
+ * full JSON.stringify — NO truncation (hashArgs truncates at 200 chars, which
+ * would cause false-positive overrides on long commands — R1-C3).
+ */
+function safeArgsKey(args: Record<string, unknown>): string {
+  try {
+    return JSON.stringify(sortKeys(args));
+  } catch {
+    return "";
+  }
 }
 
 /** Format recall results as a readable system message for injection. */
@@ -291,6 +330,7 @@ export default async function realmemoryPlugin(
     pendingPredictions: new Map(),
     predictionCounter: 0,
     lastPredictionOutcome: null,
+    lastBlock: null,
   };
 
   // Resolve host version once at plugin init (Phase 0 probe).
@@ -480,8 +520,10 @@ export default async function realmemoryPlugin(
         // are dropped rather than accumulated. The Map is bounded in practice
         // by the number of tool calls in a turn. lastPredictionOutcome is
         // also cleared — it's only meaningful within one turn of the outcome.
+        // Phase 4a: clear lastBlock too (a block across sessions is stale).
         state.pendingPredictions.clear();
         state.lastPredictionOutcome = null;
+        state.lastBlock = null;
         if (state.probe.sentinelToken && !state.probe.sentinelChecked) {
           const idleSid = (event as { properties?: { sessionID?: string } })?.properties?.sessionID;
           if (idleSid) {
@@ -610,6 +652,12 @@ export default async function realmemoryPlugin(
     // Gated ONLY on brain.predictionError !== false, independent of the
     // reflex/inhibition gates — a user who turns off warn notes still gets
     // prediction-error learning.
+    //
+    // Synthetic-brain Phase 4a: rewrite + block. The inhibition ceiling
+    // (brain.inhibition) controls the max action: "warn" (default, Phase 1
+    // behavior), "rewrite" (mutate output.args), "block" (throw + set
+    // lastBlock for override detection). Override = same call retried →
+    // confidence decrement (in-RAM + DB) → extinction.
     "tool.execute.before": (
       input: { tool: string; args?: Record<string, unknown> },
       output: { args?: Record<string, unknown> },
@@ -625,6 +673,56 @@ export default async function realmemoryPlugin(
         };
       };
 
+      const inhibition: InhibitionLevel =
+        (brainConfig.brain?.inhibition as InhibitionLevel) ?? "warn";
+
+      // ----- Phase 4a: Override detection (R1-C1, R1-C3) -----
+      // Check if the model retried the same call that was just blocked.
+      // Uses UNTRUNCATED argsKey (R1-C3) — hashArgs truncates at 200 chars.
+      const currentArgs = input.args ?? output.args ?? {};
+      const currentArgsKey = safeArgsKey(currentArgs);
+
+      if (state.lastBlock && state.lastBlock.tool === input.tool && state.lastBlock.argsKey === currentArgsKey) {
+        // Override: the model retried the blocked call (the "exception").
+        const blocked = state.lastBlock;
+        state.lastBlock = null; // consume
+
+        // Detached: metric + DB confidence decrement + in-RAM extinction (R1-C2 + R2-C1).
+        const memId = blocked.memoryId;
+        const newConfidence = Math.max(0, blocked.confidence - OVERRIDE_CONFIDENCE_DEC);
+        if (state.reflexCache) {
+          decrementRuleConfidence(state.reflexCache, memId, OVERRIDE_CONFIDENCE_DEC);
+        }
+        void (async () => {
+          try {
+            const store = await getStore();
+            await store.recordMetric(`reflex_override:${memId}`, 1, state.sessionId ?? undefined);
+            await store.update(memId, { confidence: newConfidence }).catch(() => {});
+          } catch {
+            // Fire-safe.
+          }
+        })();
+
+        // Skip inhibition (decideAction NOT called). Still run predict+stash
+        // (the retried call is real — tool.execute.after will classify it).
+        // matchCall called ONLY to get the rule for prediction (R1-C1 step 6).
+        if (brainConfig.brain?.predictionError !== false) {
+          const cache = state.reflexCache;
+          const rule = cache && cache.rules.length > 0
+            ? matchCall(cache, { tool: input.tool, args: currentArgs })
+            : null;
+          const prediction = predictOutcome(rule);
+          const callId = `${input.tool}:${hashArgs(currentArgs)}:${state.predictionCounter++}`;
+          state.pendingPredictions.set(callId, prediction);
+        }
+        return; // call proceeds without inhibition
+      }
+
+      // Not an override — clear any stale lastBlock (a different call means
+      // the model learned; the block is consumed).
+      state.lastBlock = null;
+
+      // ----- Normal inhibition path -----
       // C1: compute cache + rule WITHOUT the early returns that would make
       // predictOutcome(null) dead code. Cold cache → rule = null.
       const cache = state.reflexCache;
@@ -633,18 +731,81 @@ export default async function realmemoryPlugin(
           ? matchCall(cache, { tool: input.tool, args: input.args ?? output.args })
           : null;
 
-      // Phase 1 warn behavior — gated EXACTLY as before (reflex enabled,
-      // inhibition not "off"), AND on rule != null. Unchanged semantics;
-      // only the early returns are removed in favor of a conditional.
-      if (
-        brainConfig.brain?.reflex !== false &&
-        brainConfig.brain?.inhibition !== "off" &&
-        rule != null
-      ) {
-        // Warn: queue a one-line note into pendingWarnNote (separate field — avoids race).
-        state.pendingWarnNote = `[realmemory reflex] ${rule.note}`;
+      // Phase 4a: decide the action from config ceiling + rule capabilities.
+      // brain.reflex !== false is implicitly preserved: reflex:false → cache
+      // never built → rule=null → decideAction returns "none" (R1-N2).
+      const action = decideAction(rule, inhibition);
 
-        // Record reflex_fire metric (detached — non-blocking, fire-and-forget).
+      if (action === "block" && rule) {
+        // Block: set lastBlock, record metric (detached BEFORE throw), then throw.
+        state.lastBlock = {
+          tool: input.tool,
+          argsKey: currentArgsKey,
+          memoryId: rule.memoryId,
+          confidence: rule.confidence,
+        };
+        void (async () => {
+          try {
+            const store = await getStore();
+            await store.recordMetric(
+              `reflex_block:${rule.memoryId}`,
+              1,
+              state.sessionId ?? undefined,
+            );
+          } catch {
+            // Fire-safe.
+          }
+        })();
+        // Phase 2: still stash a prediction for this call (the block may be
+        // overridden; if so, the outcome is classified). This must happen
+        // BEFORE the throw.
+        if (brainConfig.brain?.predictionError !== false) {
+          const prediction = predictOutcome(rule);
+          const callId = `${input.tool}:${hashArgs(currentArgs)}:${state.predictionCounter++}`;
+          state.pendingPredictions.set(callId, prediction);
+        }
+        throw new Error(blockMessage(rule));
+      }
+
+      if (action === "rewrite" && rule?.rewrite) {
+        // Rewrite: mutate output.args in place.
+        const origArgs = output.args ?? input.args ?? {};
+        const rewritten = rule.rewrite(origArgs);
+        if (rewritten !== origArgs) {
+          // The rewrite fn changed the args — apply the mutation.
+          output.args = rewritten;
+          void (async () => {
+            try {
+              const store = await getStore();
+              await store.recordMetric(
+                `reflex_rewrite:${rule.memoryId}`,
+                1,
+                state.sessionId ?? undefined,
+              );
+            } catch {
+              // Fire-safe.
+            }
+          })();
+          state.pendingWarnNote = `[realmemory reflex] Rewrote args: ${rule.note}`;
+        } else {
+          // Rewrite was a no-op (from not present — R1-N6). Fall back to warn.
+          state.pendingWarnNote = `[realmemory reflex] ${rule.note}`;
+          void (async () => {
+            try {
+              const store = await getStore();
+              await store.recordMetric(
+                `reflex_fire:${rule.memoryId}`,
+                1,
+                state.sessionId ?? undefined,
+              );
+            } catch {
+              // Fire-safe.
+            }
+          })();
+        }
+      } else if (action === "warn" && rule) {
+        // Warn: today's Phase 1 behavior (regression-free).
+        state.pendingWarnNote = `[realmemory reflex] ${rule.note}`;
         void (async () => {
           try {
             const store = await getStore();
@@ -662,9 +823,11 @@ export default async function realmemoryPlugin(
       // Phase 2: predict + stash. Reflex path — cache-only, no I/O (ADR-010).
       // Gated ONLY on brain.predictionError !== false, so it runs for BOTH
       // match and no-match calls. Deliberately independent of the
-      // reflex/inhibition gates.
+      // reflex/inhibition gates. Runs AFTER inhibition actions (the prediction
+      // is about the call as proposed — for rewrite, the ORIGINAL args, not
+      // the corrected ones).
       if (brainConfig.brain?.predictionError !== false) {
-        const prediction = predictOutcome(rule); // null-safe — rule may be null
+        const prediction = predictOutcome(rule); // null-safe
         const callId = `${input.tool}:${hashArgs(input.args ?? output.args)}:${state.predictionCounter++}`;
         state.pendingPredictions.set(callId, prediction);
       }

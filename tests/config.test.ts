@@ -222,4 +222,19 @@ describe("validateConfig()", () => {
       validateConfig({ recallThreshold: 0, archiveThreshold: 1 }),
     ).not.toThrow();
   });
+
+  // Synthetic-brain Phase 4a: inhibition validation
+  it("accepts all four inhibition levels", () => {
+    for (const lvl of ["off", "warn", "rewrite", "block"] as const) {
+      expect(() =>
+        validateConfig({ brain: { inhibition: lvl } }),
+      ).not.toThrow();
+    }
+  });
+
+  it("rejects an invalid inhibition value", () => {
+    expect(() =>
+      validateConfig({ brain: { inhibition: "delete" } as unknown as { inhibition?: "off" | "warn" | "rewrite" | "block" } }),
+    ).toThrow(/brain.inhibition must be one of/);
+  });
 });

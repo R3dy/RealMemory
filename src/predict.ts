@@ -190,7 +190,7 @@ export function hashArgs(args: Record<string, unknown> | undefined): string {
   }
 }
 
-function sortKeys(value: unknown): unknown {
+export function sortKeys(value: unknown): unknown {
   if (Array.isArray(value)) {
     return value.map(sortKeys);
   }

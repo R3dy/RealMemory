@@ -1,7 +1,7 @@
 import {
   MemoryStore,
   loadConfig
-} from "./chunk-6SGGXRTZ.js";
+} from "./chunk-P7ZDGXW7.js";
 
 // src/mcp-server.ts
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -1596,7 +1596,7 @@ function createMcpTools(store) {
   ];
 }
 var SERVER_NAME = "realmemory";
-var SERVER_VERSION = "0.8.0";
+var SERVER_VERSION = "0.10.0";
 async function startMcpServer(config, opts) {
   const mergedConfig = config ?? loadConfig();
   const ownLifecycle = opts?.ownLifecycle ?? false;

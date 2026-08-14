@@ -187,6 +187,12 @@ function validateConfig(config) {
   if (config.brain?.predictionError !== void 0 && typeof config.brain.predictionError !== "boolean") {
     throw new Error("brain.predictionError must be a boolean");
   }
+  if (config.brain?.inhibition !== void 0) {
+    const valid = ["off", "warn", "rewrite", "block"];
+    if (!valid.includes(config.brain.inhibition)) {
+      throw new Error(`brain.inhibition must be one of: ${valid.join(", ")}`);
+    }
+  }
   if (config.brain?.workingMemory !== void 0 && typeof config.brain.workingMemory !== "boolean") {
     throw new Error("brain.workingMemory must be a boolean");
   }

@@ -452,6 +452,12 @@ function validateConfig(config) {
   if (config.brain?.predictionError !== void 0 && typeof config.brain.predictionError !== "boolean") {
     throw new Error("brain.predictionError must be a boolean");
   }
+  if (config.brain?.inhibition !== void 0) {
+    const valid = ["off", "warn", "rewrite", "block"];
+    if (!valid.includes(config.brain.inhibition)) {
+      throw new Error(`brain.inhibition must be one of: ${valid.join(", ")}`);
+    }
+  }
   if (config.brain?.workingMemory !== void 0 && typeof config.brain.workingMemory !== "boolean") {
     throw new Error("brain.workingMemory must be a boolean");
   }
@@ -2199,10 +2205,23 @@ function compileRule(memory) {
   }
   if (!matcher) return null;
   const note = memory.content.length > NOTE_MAX_LENGTH ? `${memory.content.slice(0, NOTE_MAX_LENGTH - 3)}...` : memory.content;
+  let rewrite;
+  const rewriteMeta = metadata.rewrite ?? null;
+  if (rewriteMeta && typeof rewriteMeta.from === "string" && typeof rewriteMeta.to === "string" && rewriteMeta.from.length > 0) {
+    const from = rewriteMeta.from;
+    const to = rewriteMeta.to;
+    rewrite = (args) => {
+      const cmd = args?.command;
+      if (typeof cmd !== "string" || !cmd.includes(from)) return args;
+      return { ...args, command: cmd.split(from).join(to) };
+    };
+  }
+  const blockEligible = memory.category === "safety" || memory.category === "cost";
   return {
     memoryId: memory.id,
     match: matcher,
-    action: "warn",
+    rewrite,
+    blockEligible,
     note,
     salience: Math.max(0, Math.min(1, memory.weight)),
     confidence: Math.max(0, Math.min(1, memory.confidence))
@@ -2232,7 +2251,7 @@ async function buildReflexCache(store) {
     rules: rules.slice(0, REFLEX_RULE_CAP),
     preferences: preferences.slice(0, PREFERENCES_CAP),
     arousal: 0,
-    // Phase 1 stub — Phase 4 (arousal) populates this
+    // Phase 1 stub — Phase 5 (arousal) populates this
     builtAt: Date.now()
   };
 }
@@ -2256,6 +2275,30 @@ function addRule(cache, rule) {
   if (cache.rules.length > REFLEX_RULE_CAP) {
     cache.rules.length = REFLEX_RULE_CAP;
   }
+}
+var BLOCK_CONFIDENCE_FLOOR = 0.5;
+var REWRITE_CONFIDENCE_FLOOR = 0.3;
+var BLOCK_SALIENCE_FLOOR = 0.8;
+var REWRITE_SALIENCE_FLOOR = 0.5;
+var OVERRIDE_CONFIDENCE_DEC = 0.2;
+function decideAction(rule, inhibition) {
+  if (inhibition === "off" || rule === null) return "none";
+  if (inhibition === "warn") return "warn";
+  if (inhibition === "block" && rule.salience >= BLOCK_SALIENCE_FLOOR && rule.confidence >= BLOCK_CONFIDENCE_FLOOR && rule.blockEligible) {
+    return "block";
+  }
+  if (rule.salience >= REWRITE_SALIENCE_FLOOR && rule.confidence >= REWRITE_CONFIDENCE_FLOOR && rule.rewrite) {
+    return "rewrite";
+  }
+  return "warn";
+}
+function decrementRuleConfidence(cache, memoryId, amount) {
+  const rule = cache.rules.find((r) => r.memoryId === memoryId);
+  if (!rule) return;
+  rule.confidence = Math.max(0, rule.confidence - amount);
+  cache.rules.sort(
+    (a, b) => b.salience * b.confidence - a.salience * a.confidence
+  );
 }
 
 // src/predict.ts
@@ -2670,6 +2713,16 @@ function isErrorResult(result) {
   ];
   return errorPatterns.some((p) => p.test(result));
 }
+function blockMessage(rule) {
+  return `Blocked by realmemory: ${rule.note} (memory ${rule.memoryId}). If this is intentional, retry the command and it will be recorded as an exception.`;
+}
+function safeArgsKey(args) {
+  try {
+    return JSON.stringify(sortKeys(args));
+  } catch {
+    return "";
+  }
+}
 function formatRecallResults(results) {
   if (results.length === 0) return "";
   const lines = ["## Relevant memories from previous sessions", ""];
@@ -2751,7 +2804,8 @@ async function realmemoryPlugin(ctx) {
     pendingWarnNote: null,
     pendingPredictions: /* @__PURE__ */ new Map(),
     predictionCounter: 0,
-    lastPredictionOutcome: null
+    lastPredictionOutcome: null,
+    lastBlock: null
   };
   state.probe.hostVersion = resolveHostVersion(ctx);
   async function getStore() {
@@ -2887,6 +2941,7 @@ async function realmemoryPlugin(ctx) {
         recordHookFired(getStore, state.probe, "event:session.idle");
         state.pendingPredictions.clear();
         state.lastPredictionOutcome = null;
+        state.lastBlock = null;
         if (state.probe.sentinelToken && !state.probe.sentinelChecked) {
           const idleSid = event?.properties?.sessionID;
           if (idleSid) {
@@ -2997,12 +3052,105 @@ async function realmemoryPlugin(ctx) {
     // Gated ONLY on brain.predictionError !== false, independent of the
     // reflex/inhibition gates — a user who turns off warn notes still gets
     // prediction-error learning.
+    //
+    // Synthetic-brain Phase 4a: rewrite + block. The inhibition ceiling
+    // (brain.inhibition) controls the max action: "warn" (default, Phase 1
+    // behavior), "rewrite" (mutate output.args), "block" (throw + set
+    // lastBlock for override detection). Override = same call retried →
+    // confidence decrement (in-RAM + DB) → extinction.
     "tool.execute.before": (input, output) => {
       recordHookFired(getStore, state.probe, "tool.execute.before");
       const brainConfig = state.config;
+      const inhibition = brainConfig.brain?.inhibition ?? "warn";
+      const currentArgs = input.args ?? output.args ?? {};
+      const currentArgsKey = safeArgsKey(currentArgs);
+      if (state.lastBlock && state.lastBlock.tool === input.tool && state.lastBlock.argsKey === currentArgsKey) {
+        const blocked = state.lastBlock;
+        state.lastBlock = null;
+        const memId = blocked.memoryId;
+        const newConfidence = Math.max(0, blocked.confidence - OVERRIDE_CONFIDENCE_DEC);
+        if (state.reflexCache) {
+          decrementRuleConfidence(state.reflexCache, memId, OVERRIDE_CONFIDENCE_DEC);
+        }
+        void (async () => {
+          try {
+            const store = await getStore();
+            await store.recordMetric(`reflex_override:${memId}`, 1, state.sessionId ?? void 0);
+            await store.update(memId, { confidence: newConfidence }).catch(() => {
+            });
+          } catch {
+          }
+        })();
+        if (brainConfig.brain?.predictionError !== false) {
+          const cache2 = state.reflexCache;
+          const rule2 = cache2 && cache2.rules.length > 0 ? matchCall(cache2, { tool: input.tool, args: currentArgs }) : null;
+          const prediction = predictOutcome(rule2);
+          const callId = `${input.tool}:${hashArgs(currentArgs)}:${state.predictionCounter++}`;
+          state.pendingPredictions.set(callId, prediction);
+        }
+        return;
+      }
+      state.lastBlock = null;
       const cache = state.reflexCache;
       const rule = cache && cache.rules.length > 0 ? matchCall(cache, { tool: input.tool, args: input.args ?? output.args }) : null;
-      if (brainConfig.brain?.reflex !== false && brainConfig.brain?.inhibition !== "off" && rule != null) {
+      const action = decideAction(rule, inhibition);
+      if (action === "block" && rule) {
+        state.lastBlock = {
+          tool: input.tool,
+          argsKey: currentArgsKey,
+          memoryId: rule.memoryId,
+          confidence: rule.confidence
+        };
+        void (async () => {
+          try {
+            const store = await getStore();
+            await store.recordMetric(
+              `reflex_block:${rule.memoryId}`,
+              1,
+              state.sessionId ?? void 0
+            );
+          } catch {
+          }
+        })();
+        if (brainConfig.brain?.predictionError !== false) {
+          const prediction = predictOutcome(rule);
+          const callId = `${input.tool}:${hashArgs(currentArgs)}:${state.predictionCounter++}`;
+          state.pendingPredictions.set(callId, prediction);
+        }
+        throw new Error(blockMessage(rule));
+      }
+      if (action === "rewrite" && rule?.rewrite) {
+        const origArgs = output.args ?? input.args ?? {};
+        const rewritten = rule.rewrite(origArgs);
+        if (rewritten !== origArgs) {
+          output.args = rewritten;
+          void (async () => {
+            try {
+              const store = await getStore();
+              await store.recordMetric(
+                `reflex_rewrite:${rule.memoryId}`,
+                1,
+                state.sessionId ?? void 0
+              );
+            } catch {
+            }
+          })();
+          state.pendingWarnNote = `[realmemory reflex] Rewrote args: ${rule.note}`;
+        } else {
+          state.pendingWarnNote = `[realmemory reflex] ${rule.note}`;
+          void (async () => {
+            try {
+              const store = await getStore();
+              await store.recordMetric(
+                `reflex_fire:${rule.memoryId}`,
+                1,
+                state.sessionId ?? void 0
+              );
+            } catch {
+            }
+          })();
+        }
+      } else if (action === "warn" && rule) {
         state.pendingWarnNote = `[realmemory reflex] ${rule.note}`;
         void (async () => {
           try {
