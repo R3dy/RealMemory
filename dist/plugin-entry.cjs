@@ -452,6 +452,14 @@ function validateConfig(config) {
   if (config.brain?.predictionError !== void 0 && typeof config.brain.predictionError !== "boolean") {
     throw new Error("brain.predictionError must be a boolean");
   }
+  if (config.brain?.workingMemory !== void 0 && typeof config.brain.workingMemory !== "boolean") {
+    throw new Error("brain.workingMemory must be a boolean");
+  }
+  if (config.brain?.workingMemoryTokens !== void 0) {
+    if (typeof config.brain.workingMemoryTokens !== "number" || config.brain.workingMemoryTokens < 200 || config.brain.workingMemoryTokens > 4e3) {
+      throw new Error("brain.workingMemoryTokens must be a number in [200, 4000]");
+    }
+  }
 }
 function readJsonFile(path) {
   const content = (0, import_node_fs.readFileSync)(path, "utf-8");
@@ -2499,6 +2507,140 @@ async function callSummaryProvider(provider, prompt) {
   return text;
 }
 
+// src/working-memory.ts
+function emptySlot() {
+  return { content: "", memoryIds: [] };
+}
+function emptySlots() {
+  return {
+    identity: emptySlot(),
+    taskFrame: emptySlot(),
+    queriedLessons: emptySlot(),
+    freshLessons: emptySlot(),
+    openPredictions: emptySlot()
+  };
+}
+var SLOT_BUDGETS = {
+  identity: 150,
+  taskFrame: 200,
+  activeLessons: 300,
+  // merged queriedLessons + freshLessons, shared budget
+  openPredictions: 150
+};
+var DEFAULT_WORKING_MEMORY_TOKENS = 800;
+function estimateTokens(text) {
+  return Math.ceil(text.length / 4);
+}
+function truncateToTokens(content, budget) {
+  if (estimateTokens(content) <= budget) return content;
+  const lines = content.split("\n");
+  let result = "";
+  for (const line of lines) {
+    const candidate = result ? result + "\n" + line : line;
+    if (estimateTokens(candidate) > budget) break;
+    result = candidate;
+  }
+  return result;
+}
+function truncateSlotContent(content, memoryIds, budget) {
+  if (estimateTokens(content) <= budget) {
+    return { content, survivingIds: memoryIds };
+  }
+  const truncated = truncateToTokens(content, budget);
+  const ratio = estimateTokens(truncated) / Math.max(estimateTokens(content), 1);
+  const survivingCount = Math.ceil(memoryIds.length * ratio);
+  return { content: truncated, survivingIds: memoryIds.slice(0, survivingCount) };
+}
+function assembleWorkingMemory(slots, pendingWarnNote, config) {
+  const totalBudget = config.workingMemoryTokens ?? DEFAULT_WORKING_MEMORY_TOKENS;
+  const activeLessonsBudget = SLOT_BUDGETS.activeLessons;
+  let activeLessonsParts = [];
+  let activeLessonsIds = [];
+  if (pendingWarnNote) {
+    activeLessonsParts.push(pendingWarnNote);
+  }
+  if (slots.freshLessons.content) {
+    activeLessonsParts.push(slots.freshLessons.content);
+    activeLessonsIds.push(...slots.freshLessons.memoryIds);
+  }
+  if (slots.queriedLessons.content) {
+    activeLessonsParts.push(slots.queriedLessons.content);
+    activeLessonsIds.push(...slots.queriedLessons.memoryIds);
+  }
+  const activeLessonsRaw = activeLessonsParts.join("\n");
+  let activeLessonsTruncated = truncateSlotContent(activeLessonsRaw, activeLessonsIds, activeLessonsBudget);
+  const identityTruncated = truncateSlotContent(
+    slots.identity.content,
+    slots.identity.memoryIds,
+    SLOT_BUDGETS.identity
+  );
+  const taskFrameTruncated = truncateSlotContent(
+    slots.taskFrame.content,
+    slots.taskFrame.memoryIds,
+    SLOT_BUDGETS.taskFrame
+  );
+  const openPredictionsTruncated = truncateSlotContent(
+    slots.openPredictions.content,
+    slots.openPredictions.memoryIds,
+    SLOT_BUDGETS.openPredictions
+  );
+  const hasIdentity = identityTruncated.content.length > 0;
+  const hasTaskFrame = taskFrameTruncated.content.length > 0;
+  const hasActiveLessons = activeLessonsTruncated.content.length > 0;
+  const hasOpenPredictions = openPredictionsTruncated.content.length > 0;
+  const hasWarnNote = pendingWarnNote !== null && pendingWarnNote.length > 0;
+  if (!hasIdentity && !hasTaskFrame && !hasActiveLessons && !hasOpenPredictions && !hasWarnNote) {
+    return { formatted: null, deliveredMemoryIds: [] };
+  }
+  const protectedTokens = estimateTokens(identityTruncated.content) + estimateTokens(taskFrameTruncated.content);
+  const remainingBudget = Math.max(0, totalBudget - protectedTokens);
+  const activeLessonsCurrent = estimateTokens(activeLessonsTruncated.content);
+  const openPredictionsCurrent = estimateTokens(openPredictionsTruncated.content);
+  let activeLessonsFinal = activeLessonsTruncated;
+  let openPredictionsFinal = openPredictionsTruncated;
+  if (activeLessonsCurrent + openPredictionsCurrent > remainingBudget) {
+    const afterOpenPredictionsTrim = Math.max(0, remainingBudget - activeLessonsCurrent);
+    if (openPredictionsCurrent > afterOpenPredictionsTrim) {
+      openPredictionsFinal = truncateSlotContent(
+        openPredictionsTruncated.content,
+        openPredictionsTruncated.survivingIds,
+        afterOpenPredictionsTrim
+      );
+    }
+    const stillOver = estimateTokens(activeLessonsFinal.content) + estimateTokens(openPredictionsFinal.content) > remainingBudget;
+    if (stillOver) {
+      const activeLessonsAllowed = remainingBudget - estimateTokens(openPredictionsFinal.content);
+      activeLessonsFinal = truncateSlotContent(
+        activeLessonsTruncated.content,
+        activeLessonsTruncated.survivingIds,
+        Math.max(0, activeLessonsAllowed)
+      );
+    }
+  }
+  const sections = ["## Working memory", ""];
+  if (hasIdentity) {
+    sections.push(identityTruncated.content);
+    sections.push("");
+  }
+  if (hasTaskFrame) {
+    sections.push("### Task");
+    sections.push(taskFrameTruncated.content);
+    sections.push("");
+  }
+  if (activeLessonsFinal.content.length > 0) {
+    sections.push("### Active lessons");
+    sections.push(activeLessonsFinal.content);
+    sections.push("");
+  }
+  if (openPredictionsFinal.content.length > 0) {
+    sections.push(openPredictionsFinal.content);
+    sections.push("");
+  }
+  const formatted = sections.join("\n").trimEnd();
+  const deliveredMemoryIds = taskFrameTruncated.survivingIds;
+  return { formatted, deliveredMemoryIds };
+}
+
 // src/plugin.ts
 function isConfigOrSchemaFile(filePath) {
   const patterns = [
@@ -2594,7 +2736,7 @@ async function realmemoryPlugin(ctx) {
       projectId: deriveProjectId(ctx.directory)
     },
     injectedMemoryIds: /* @__PURE__ */ new Set(),
-    pendingInjection: null,
+    workingMemory: emptySlots(),
     initialized: false,
     initPromise: null,
     lastUserText: null,
@@ -2637,6 +2779,26 @@ async function realmemoryPlugin(ctx) {
     } catch {
     }
   }
+  function recordWorkingMemoryMetrics(getStore2, sessionId, slots) {
+    void (async () => {
+      try {
+        const store = await getStore2();
+        const slotNames = [
+          ["identity", slots.identity],
+          ["taskFrame", slots.taskFrame],
+          ["queriedLessons", slots.queriedLessons],
+          ["freshLessons", slots.freshLessons],
+          ["openPredictions", slots.openPredictions]
+        ];
+        for (const [name, slot] of slotNames) {
+          if (slot.content.length > 0) {
+            await store.recordMetric(`working_memory:${name}`, 1, sessionId ?? void 0);
+          }
+        }
+      } catch {
+      }
+    })();
+  }
   return {
     // On session events: auto-recall (created) and auto-summarize (idle).
     event: async ({
@@ -2661,8 +2823,31 @@ async function realmemoryPlugin(ctx) {
           });
           results.forEach((r) => state.injectedMemoryIds.add(r.memory.id));
           if (results.length > 0) {
-            state.pendingInjection = formatRecallResults(results);
+            state.workingMemory.taskFrame = {
+              content: formatRecallResults(results),
+              memoryIds: results.map((r) => r.memory.id)
+            };
             await log("info", `Auto-recalled ${results.length} memories for new session`);
+          }
+          const brainConfigWM = state.config;
+          if (brainConfigWM.brain?.workingMemory !== false) {
+            try {
+              const idResults = await store.search({
+                scope: "global",
+                types: ["user_preference"],
+                sortBy: "weight",
+                sortOrder: "desc",
+                limit: 1
+              });
+              if (idResults.memories.length > 0) {
+                const m = idResults.memories[0];
+                state.workingMemory.identity = {
+                  content: m.content,
+                  memoryIds: [m.id]
+                };
+              }
+            } catch {
+            }
           }
         } catch (error) {
           await log(
@@ -2962,6 +3147,18 @@ async function realmemoryPlugin(ctx) {
                 surprise,
                 encodedMemoryId
               };
+              if (shouldEncode(surprise) && encodedMemoryId) {
+                state.workingMemory.freshLessons = {
+                  content: `- ${describe({ tool: input.tool, args }, actual)}`,
+                  memoryIds: [encodedMemoryId]
+                };
+              }
+              if (surprise >= 0.2) {
+                state.workingMemory.openPredictions = {
+                  content: `**Prediction error** (${input.tool}): expected ${actual.success ? "failure" : "success"}, observed ${actual.success ? "success" : "error"} (surprise=${surprise.toFixed(2)})`,
+                  memoryIds: encodedMemoryId ? [encodedMemoryId] : []
+                };
+              }
             }
           }
         } catch (error) {
@@ -3067,11 +3264,35 @@ async function realmemoryPlugin(ctx) {
           const newResults = results.filter(
             (r) => !state.injectedMemoryIds.has(r.memory.id)
           );
-          if (newResults.length === 0) return;
-          newResults.forEach((r) => state.injectedMemoryIds.add(r.memory.id));
-          state.lastInjectedMemoryIds = newResults.map((r) => r.memory.id).slice(-5);
-          state.pendingInjection = formatRecallResults(newResults);
-          await log("info", `Auto-recalled ${newResults.length} memories for user message`);
+          if (newResults.length > 0) {
+            newResults.forEach((r) => state.injectedMemoryIds.add(r.memory.id));
+            state.workingMemory.taskFrame = {
+              content: formatRecallResults(newResults),
+              memoryIds: newResults.map((r) => r.memory.id)
+            };
+            await log("info", `Auto-recalled ${newResults.length} memories for user message`);
+          }
+          const brainConfigWM = state.config;
+          if (brainConfigWM.brain?.workingMemory !== false) {
+            try {
+              const lessonResults = await store.search({
+                types: ["lesson_learned"],
+                scope: "all",
+                minWeight: 0.3,
+                sortBy: "weight",
+                sortOrder: "desc",
+                limit: 5
+              });
+              if (lessonResults.memories.length > 0) {
+                const lessonTexts = lessonResults.memories.map((m) => `- ${m.content.slice(0, 200)}`);
+                state.workingMemory.queriedLessons = {
+                  content: lessonTexts.join("\n"),
+                  memoryIds: lessonResults.memories.map((m) => m.id)
+                };
+              }
+            } catch {
+            }
+          }
         } catch (error) {
           await log(
             "error",
@@ -3083,26 +3304,39 @@ async function realmemoryPlugin(ctx) {
     // Delivery mechanism: OpenCode builds the LLM request (system prompt)
     // after a user message is received, so any recall block staged by
     // `session.created` or `chat.message` is appended to the system prompt
-    // here — and cleared so it is never injected twice.
+    // here. Phase 3: replaced the one-shot pendingInjection with a budgeted,
+    // slotted working-memory window rebuilt every turn.
     "experimental.chat.system.transform": (_input, output) => {
       recordHookFired(getStore, state.probe, "experimental.chat.system.transform");
       const r = pushSentinel(state.probe, output);
       if (r.pushed && !r.assertionOk) {
         recordLandsOutcome(getStore, state.probe, 0);
       }
-      if (!state.pendingInjection && !state.pendingWarnNote) return;
       if (!Array.isArray(output?.system)) {
-        state.pendingInjection = null;
         state.pendingWarnNote = null;
         return;
       }
-      if (state.pendingInjection) {
-        output.system.push(state.pendingInjection);
-        state.lastInjectedMemoryIds = Array.from(state.injectedMemoryIds).slice(-5);
-        state.pendingInjection = null;
+      const brainConfig = state.config;
+      if (brainConfig.brain?.workingMemory === false) {
+        if (state.pendingWarnNote) {
+          output.system.push(state.pendingWarnNote);
+          state.pendingWarnNote = null;
+        }
+        return;
       }
-      if (state.pendingWarnNote) {
-        output.system.push(state.pendingWarnNote);
+      const { formatted, deliveredMemoryIds } = assembleWorkingMemory(
+        state.workingMemory,
+        state.pendingWarnNote,
+        { workingMemoryTokens: brainConfig.brain?.workingMemoryTokens }
+      );
+      if (formatted) {
+        output.system.push(formatted);
+        state.lastInjectedMemoryIds = state.workingMemory.taskFrame.memoryIds.slice(-5);
+        deliveredMemoryIds.forEach((id) => state.injectedMemoryIds.add(id));
+        recordWorkingMemoryMetrics(getStore, state.sessionId, state.workingMemory);
+      }
+      state.workingMemory.openPredictions = { content: "", memoryIds: [] };
+      if (formatted) {
         state.pendingWarnNote = null;
       }
     },
@@ -3113,6 +3347,11 @@ async function realmemoryPlugin(ctx) {
     // thrown out of the handler or the compaction flow.
     "experimental.session.compacting": () => {
       recordHookFired(getStore, state.probe, "experimental.session.compacting");
+      state.injectedMemoryIds.clear();
+      state.workingMemory.taskFrame = { content: "", memoryIds: [] };
+      state.workingMemory.queriedLessons = { content: "", memoryIds: [] };
+      state.workingMemory.freshLessons = { content: "", memoryIds: [] };
+      state.workingMemory.openPredictions = { content: "", memoryIds: [] };
       void (async () => {
         try {
           const store = await getStore();
