@@ -1810,6 +1810,19 @@ var MemoryStore = class {
     return row.c;
   }
   /**
+   * Return recent metrics rows whose metric_name matches the given prefix
+   * (LIKE 'prefix%'), ordered by recorded_at desc, limited to `limit` rows.
+   * Used by the memory_why MCP tool to surface recent reflex actions.
+   * (Synthetic-brain Phase 7.)
+   */
+  async getRecentMetricsByPrefix(prefix, limit = 20) {
+    if (!this.db) return [];
+    const rows = this.db.prepare(
+      "SELECT metric_name, metric_value, session_id, recorded_at FROM metrics WHERE metric_name LIKE ? ORDER BY recorded_at DESC LIMIT ?"
+    ).all(`${prefix}%`, limit);
+    return rows;
+  }
+  /**
    * Bloat ratio: fraction of active memories with weight below
    * archiveThreshold. 0.0 on an empty store.
    */
@@ -3419,6 +3432,20 @@ var getMetricsSchema = import_zod.z.object({
   name: import_zod.z.string().optional().describe("Filter by metric name (e.g. 'recall_hit'). If omitted, returns all metrics."),
   since: import_zod.z.string().optional().describe("Only include metrics recorded at or after this ISO timestamp.")
 });
+var memoryWhySchema = import_zod.z.object({
+  limit: import_zod.z.number().optional().default(10).describe("Max number of recent reflex actions to return (default 10).")
+});
+var memoryRecallSchema = import_zod.z.object({
+  query: import_zod.z.string().describe("What you want to recall \u2014 natural-language query."),
+  limit: import_zod.z.number().optional().default(5),
+  threshold: import_zod.z.number().min(0).max(1).optional().default(0.3)
+});
+var memoryNoteSchema = import_zod.z.object({
+  content: import_zod.z.string().describe("The memory content \u2014 what to remember."),
+  type: memoryTypeSchema.optional().default("lesson_learned"),
+  tags: import_zod.z.array(import_zod.z.string()).optional().default([]),
+  confidence: import_zod.z.number().min(0).max(1).optional().default(0.6)
+});
 function createMcpTools(store) {
   return [
     {
@@ -3489,11 +3516,67 @@ function createMcpTools(store) {
         const p = getMetricsSchema.parse(args);
         return store.getMetricSummary(p.name, p.since);
       }
+    },
+    // Synthetic-brain Phase 7: native memory tools
+    {
+      name: "memory_why",
+      description: "Introspect on why the memory system recently blocked, rewrote, or warned about a tool call. Returns recent reflex actions (block/rewrite/warn/override) with the source memory IDs, action types, and timestamps. Use this when a tool call was blocked or modified and you want to understand why.",
+      inputSchema: zodToInputSchema(memoryWhySchema),
+      handler: async (args) => {
+        const p = memoryWhySchema.parse(args);
+        const prefixes = ["reflex_block:", "reflex_rewrite:", "reflex_fire:", "reflex_override:"];
+        const all = [];
+        for (const prefix of prefixes) {
+          const rows = await store.getRecentMetricsByPrefix(prefix, p.limit);
+          all.push(...rows);
+        }
+        all.sort((a, b) => b.recorded_at.localeCompare(a.recorded_at));
+        return all.slice(0, p.limit).map((r) => {
+          const [_, memoryId] = r.metric_name.split(":");
+          const action = r.metric_name.split(":")[0].replace("reflex_", "");
+          return {
+            action,
+            memoryId,
+            sessionId: r.session_id,
+            recordedAt: r.recorded_at
+          };
+        });
+      }
+    },
+    {
+      name: "memory_recall",
+      description: "Deliberately search your memory for relevant context. Use when the injected working-memory window wasn't enough and you need to recall something specific from past sessions.",
+      inputSchema: zodToInputSchema(memoryRecallSchema),
+      handler: async (args) => {
+        const p = memoryRecallSchema.parse(args);
+        return store.recall({
+          query: p.query,
+          scope: "all",
+          limit: p.limit,
+          threshold: p.threshold,
+          traverse: true
+        });
+      }
+    },
+    {
+      name: "memory_note",
+      description: 'Explicitly remember something for future sessions. Use when you want to store a lesson, preference, or fact \u2014 "remember this" as a deliberate act.',
+      inputSchema: zodToInputSchema(memoryNoteSchema),
+      handler: async (args) => {
+        const p = memoryNoteSchema.parse(args);
+        return store.store({
+          content: p.content,
+          type: p.type,
+          scope: "project",
+          confidence: p.confidence,
+          tags: p.tags
+        });
+      }
     }
   ];
 }
 var SERVER_NAME = "realmemory";
-var SERVER_VERSION = "0.11.0";
+var SERVER_VERSION = "0.12.0";
 async function startMcpServer(config, opts) {
   const mergedConfig = config ?? loadConfig();
   const ownLifecycle = opts?.ownLifecycle ?? false;

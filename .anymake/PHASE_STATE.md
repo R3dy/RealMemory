@@ -15,7 +15,7 @@ autonomous_mode: true
 | 2 Planning | COMPLETE | docs/api-design.md + 5 ADRs |
 | 3 Solutioning | COMPLETE | docs/solutioning/epics.md + backlog.md + dependency-graph.md |
 | 4 Implementation | COMPLETE | 20 stories, 265 tests, all merged to main |
-| 5 Launch | COMPLETE | v0.10.0 — built Aug 14 2026; brain-loop ACTIVE in host OpenCode; synthetic-brain Phase 0 + Phase 1 + Phase 2 + Phase 3 + Phase 4a shipped. Distributed via git-install (`realmemory@git+https://github.com/R3dy/RealMemory.git`) — npm publish is OFF the table (Royce has no npm login). |
+| 5 Launch | COMPLETE | v0.11.0 — built Aug 14 2026; brain-loop ACTIVE in host OpenCode; synthetic-brain Phase 0 + Phase 1 + Phase 2 + Phase 3 + Phase 4a + Phase 5 shipped. Distributed via git-install (`realmemory@git+https://github.com/R3dy/RealMemory.git`) — npm publish is OFF the table (Royce has no npm login). |
 
 ## Plugin status (live in this environment)
 
@@ -42,9 +42,19 @@ autonomous_mode: true
 
 ## Current Step
 
-**v0.10.0 built + live; synthetic-brain Phase 4a (rewrite + block inhibition) shipped.** Issue #38 shipped (PR #39, tag `issue-38`). The inhibition gate now changes behavior, not just context: `rewrite` mutates tool args in place; `block` aborts the call with a teaching message; override (same-call retry) decrements confidence in-RAM + DB (extinction). Config `brain.inhibition: "off"|"warn"|"rewrite"|"block"` (default `"warn"` — regression-free). 676 tests (671 pass + 5 pre-existing EADDRINUSE). **Royce must restart OpenCode** for the v0.10.0 plugin to take effect. Next: Phase 4b (`permission.ask` — security surface, needs Royce's explicit review, issue #39) or Phase 5 (arousal + `tool.definition`).
+**v0.11.0 built + live; synthetic-brain Phase 5 (arousal + tool.definition) shipped.** Issue #40 shipped (PR #41, merge `cc349bf`, tag `issue-40`). `chat.params` modulates temperature based on arousal (max -0.15 clamp-down, never raises). `tool.definition` appends one-line memory notes to tool descriptions. Both reflex-path, both default off. 701 tests (696 pass + 5 pre-existing EADDRINUSE). **Royce must restart OpenCode** for the v0.11.0 plugin to take effect. Config `brain.inhibition: "block"` already applied to `~/.config/opencode/realmemory.json`. Next: Phase 6 (schema formation) or Phase 7 (native memory tools). Phase 4b (permission.ask) deferred — the hook is `permission.asked` (an event, not interceptable).
 
 ## Agile increments (post-launch)
+
+### Issue #40 — Synthetic-brain Phase 5: arousal (chat.params) + tool.definition notes (2026-08-14)
+- **Status:** CLOSED (PR #41 squash merge `cc349bf`, tag `issue-40`)
+- **What:** Phase 5 of the synthetic-brain design. `chat.params` handler: arousal-based temperature modulation — `ReflexCache.arousal` (computed from rolling 5-turn window of corrections + blocks + high-surprise outcomes) clamps temperature DOWN by up to 0.15. Never raises above agent setting. `tool.definition` handler: appends a one-line memory note from the top reflex rule to the tool's description. New `matchTool(cache, toolName)` — matches on `rule.tool` field (set at compile time by `compileRule`). New `ArousalTracker` + `computeArousal` + `pushArousalSignal`. Arousal signals captured on `session.idle` BEFORE the clearing block (R1-C1 fix). Config: `brain.arousalModulation` (default false) + `brain.toolDefinitionNotes` (default false). Hook-probe: `chat.params` added to `ALWAYS_FIRE_HOOKS`, `tool.definition` to `CONDITIONAL_HOOKS`.
+- **Pipeline:** anymake-agile — plan written directly, 1 review round (1 blocking: arousal signal ordering — fixed), PO Proxy APPROVED. Direct build.
+- **Tests:** 701 total (696 pass + 5 pre-existing EADDRINUSE). 25 new (5 arousal pure functions, 3 matchTool, 6 chat.params integration, 7 tool.definition integration, 4 config validation). 4 hook-probe tests updated (hook counts: 5/4/9).
+- **Version:** 0.10.0 → 0.11.0 (MINOR — additive, no breaking change).
+- **Intent layer:** ADR-010 / INV-017 (reflex <5ms) preserved. INV-014 (dep cap), INV-005 (no schema), INV-015 (additive), INV-019 (dist). No new ADR.
+- **Revert:** `git revert -m 1 cc349bf` — additive, no schema, no deps. Rebuild dist/.
+- **Phase 4b note:** `permission.ask` does not exist as an interceptable hook in OpenCode — only `permission.asked` (an event). Phase 4b (auto-allow/deny) cannot be built until OpenCode adds a real intercept hook. Deferred.
 
 ### Issue #38 — Synthetic-brain Phase 4a: rewrite + block inhibition (behavior-changing gate, opt-in, default off) (2026-08-14)
 - **Status:** CLOSED (PR #39 squash merge `1ad6649`, tag `issue-38`)
@@ -184,31 +194,33 @@ autonomous_mode: true
 - **Follow-ups identified:** (a) domain backfill on 11 undefined-domain memories, (b) per-project architecture facts for realvol/realcode/basecamp, (c) session summaries for more high-cost sessions, (d) exhaustive pass over remaining ~1600 sessions (the methodology is repeatable).
 
 resume_next: >
-  STATUS (Aug 14 2026): realmemory v0.10.0 — synthetic-brain Phase 4a
-  (rewrite + block inhibition) shipped (issue #38, PR #39, tag issue-38).
-  The inhibition gate now changes behavior: rewrite mutates args, block
-  throws, override decrements confidence (extinction). Config
-  brain.inhibition: "off"|"warn"|"rewrite"|"block" (default "warn" —
-  regression-free). 676 tests (671 pass + 5 EADDRINUSE).
-  Royce must restart OpenCode for the v0.10.0 plugin to take effect.
+  STATUS (Aug 14 2026): realmemory v0.11.0 — synthetic-brain Phase 5
+  (arousal + tool.definition) shipped (issue #40, PR #41, merge cc349bf,
+  tag issue-40). chat.params modulates temperature (max -0.15, never
+  raises). tool.definition appends memory notes to tool descriptions.
+  Both default off, both reflex-path. Config brain.inhibition: "block"
+  already applied to ~/.config/opencode/realmemory.json.
+  701 tests (696 pass + 5 EADDRINUSE).
 
   REMAINING (in priority order):
-  (1) Royce restarts OpenCode — picks up the v0.10.0 plugin. Verify:
-  set brain.inhibition: "block" + store a category: "safety" lesson,
-  trigger the matching command, confirm the block message appears.
-  (2) Synthetic-brain Phase 4b (permission.ask habit formation) —
-  SECURITY SURFACE, needs Royce's explicit review. Issue #39.
-  Auto-allow after N approvals (never widens denied); auto-deny
-  default off. Schema V5 habits table. Design doc §4.3 second half.
-  (3) Synthetic-brain Phase 5 (arousal + tool.definition) — LOW risk.
-  chat.params modulation + memory notes in tool schemas. §4.4.
-  (4) Cartographer refresh — Phase 4a changes are internal (no new
-  ADR needed). ADR-009 `id` amendment still pending (from issue #28).
-  (5) npm publish v0.10.0 — requires Royce's npm login. CRITICAL: add
+  (1) Royce restarts OpenCode — picks up v0.11.0. The block inhibition
+  is already enabled via config. To test arousal/tooldef notes, add
+  brain.arousalModulation: true + brain.toolDefinitionNotes: true to
+  ~/.config/opencode/realmemory.json.
+  (2) Phase 4b (permission.ask) — CANNOT BUILD. The hook is
+  permission.asked (an event, not interceptable). Deferred until
+  OpenCode adds a real permission intercept hook.
+  (3) Phase 6 (schema formation) — episodes abstract into rules.
+  Medium risk, needs eval. Design doc §4.6.
+  (4) Phase 7 (native memory tools) — memory_recall, memory_note,
+  memory_why. Low risk. Design doc §4.7.
+  (5) Cartographer refresh — Phase 4a + 5 changes are internal (no new
+  ADR). ADR-009 id amendment still pending (from issue #28).
+  (6) npm publish v0.11.0 — requires Royce's npm login. CRITICAL: add
   "skills" and "scripts" to package.json files[] before publishing.
-  (6) Amend ADR-009 to document the `id` requirement for file/path
+  (7) Amend ADR-009 to document the id requirement for file/path
   plugins (from issue #28 — still pending).
-  (7) PARKING_LOT drift items from #22: Drift #5 (secrets-before-LLM),
+  (8) PARKING_LOT drift items from #22: Drift #5 (secrets-before-LLM),
   #6 (zod 4th dep), #7 (schema-v3 ADR-less). Separate issues.
-  (8) Domain backfill: 11 memories have undefined domain.
-  (9) Consider re-adding a future Node LTS to CI.
+  (9) Domain backfill: 11 memories have undefined domain.
+  (10) Consider re-adding a future Node LTS to CI.
