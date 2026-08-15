@@ -265,6 +265,18 @@ declare class MemoryStore {
      */
     count(): Promise<number>;
     /**
+     * Return recent metrics rows whose metric_name matches the given prefix
+     * (LIKE 'prefix%'), ordered by recorded_at desc, limited to `limit` rows.
+     * Used by the memory_why MCP tool to surface recent reflex actions.
+     * (Synthetic-brain Phase 7.)
+     */
+    getRecentMetricsByPrefix(prefix: string, limit?: number): Promise<Array<{
+        metric_name: string;
+        metric_value: number;
+        session_id: string | null;
+        recorded_at: string;
+    }>>;
+    /**
      * Bloat ratio: fraction of active memories with weight below
      * archiveThreshold. 0.0 on an empty store.
      */

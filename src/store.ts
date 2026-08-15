@@ -1832,6 +1832,38 @@ export class MemoryStore {
   }
 
   /**
+   * Return recent metrics rows whose metric_name matches the given prefix
+   * (LIKE 'prefix%'), ordered by recorded_at desc, limited to `limit` rows.
+   * Used by the memory_why MCP tool to surface recent reflex actions.
+   * (Synthetic-brain Phase 7.)
+   */
+  async getRecentMetricsByPrefix(
+    prefix: string,
+    limit = 20,
+  ): Promise<
+    Array<{
+      metric_name: string;
+      metric_value: number;
+      session_id: string | null;
+      recorded_at: string;
+    }>
+  > {
+    if (!this.db) return [];
+    const rows = this.db
+      .prepare(
+        "SELECT metric_name, metric_value, session_id, recorded_at FROM metrics " +
+          "WHERE metric_name LIKE ? ORDER BY recorded_at DESC LIMIT ?",
+      )
+      .all(`${prefix}%`, limit) as Array<{
+      metric_name: string;
+      metric_value: number;
+      session_id: string | null;
+      recorded_at: string;
+    }>;
+    return rows;
+  }
+
+  /**
    * Bloat ratio: fraction of active memories with weight below
    * archiveThreshold. 0.0 on an empty store.
    */
