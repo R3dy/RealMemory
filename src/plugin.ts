@@ -21,9 +21,16 @@ import {
   compileRule,
   decideAction,
   decrementRuleConfidence,
+  matchTool,
+  computeArousal,
+  emptyArousalTracker,
+  pushArousalSignal,
+  AROUSAL_TEMP_DELTA,
+  AROUSAL_THRESHOLD,
   type ReflexCache,
   type ToolCall,
   type InhibitionLevel,
+  type ArousalTracker,
   OVERRIDE_CONFIDENCE_DEC,
 } from "./reflex";
 import {
@@ -120,6 +127,8 @@ interface PluginState {
     memoryId: string;
     confidence: number;
   } | null;
+  /** Synthetic-brain Phase 5: rolling arousal signal tracker (last 5 turns). */
+  arousalTracker: ArousalTracker;
 }
 
 /** Check if a file path looks like a config, schema, or route file worth capturing. */
@@ -331,6 +340,7 @@ export default async function realmemoryPlugin(
     predictionCounter: 0,
     lastPredictionOutcome: null,
     lastBlock: null,
+    arousalTracker: emptyArousalTracker(),
   };
 
   // Resolve host version once at plugin init (Phase 0 probe).
@@ -417,6 +427,8 @@ export default async function realmemoryPlugin(
           resetProbeForSession(state.probe, sid);
           state.sessionId = sid;
         }
+        // Phase 5: clear arousal tracker (fresh session).
+        state.arousalTracker = emptyArousalTracker();
         recordHookFired(getStore, state.probe, "event:session.created");
 
         try {
@@ -514,6 +526,20 @@ export default async function realmemoryPlugin(
       if (event.type === "session.idle") {
         // Phase 0 probe: record fire + check sentinel landing (detached, independent of autoSummarize).
         recordHookFired(getStore, state.probe, "event:session.idle");
+
+        // Synthetic-brain Phase 5: capture arousal signals BEFORE the clearing
+        // block below (R1-C1 fix — lastBlock and lastPredictionOutcome are
+        // cleared at lines 534-536, so we must read them first).
+        pushArousalSignal(state.arousalTracker, {
+          correction: state.lastUserIntent === "correction",
+          block: state.lastBlock !== null,
+          highSurprise:
+            state.lastPredictionOutcome !== null &&
+            state.lastPredictionOutcome.surprise >= 0.5,
+        });
+        if (state.reflexCache) {
+          state.reflexCache.arousal = computeArousal(state.arousalTracker);
+        }
 
         // Synthetic-brain Phase 2: leak prevention. Pending predictions that
         // never got an `after` (e.g. tool was blocked, session ended mid-call)
@@ -1319,6 +1345,76 @@ export default async function realmemoryPlugin(
             "error",
             `Compacting hygiene failed: ${error instanceof Error ? error.message : String(error)}`,
           );
+        }
+      })();
+    },
+
+    // Synthetic-brain Phase 5: arousal-based temperature modulation.
+    // Reflex path (ADR-010): synchronous, cache-only, <5ms. Reads
+    // ReflexCache.arousal (in-RAM) and clamps temperature DOWN by up to 0.15.
+    // Never increases temperature above the agent's setting. Default off
+    // (brain.arousalModulation !== false gate).
+    "chat.params": (
+      _input: { sessionID?: string; agent?: string; model?: unknown; provider?: string },
+      output: { temperature?: number; topP?: number; topK?: number; maxOutputTokens?: number },
+    ) => {
+      recordHookFired(getStore, state.probe, "chat.params");
+
+      const brainConfig = state.config as {
+        brain?: { arousalModulation?: boolean };
+      };
+      if (brainConfig.brain?.arousalModulation !== true) return;
+
+      const cache = state.reflexCache;
+      if (!cache || cache.arousal < AROUSAL_THRESHOLD) return;
+
+      if (typeof output.temperature === "number" && output.temperature > 0) {
+        const delta = cache.arousal * AROUSAL_TEMP_DELTA;
+        const newTemp = Math.max(0, output.temperature - delta);
+        output.temperature = newTemp;
+        // Record metric (detached — INV-017).
+        void (async () => {
+          try {
+            const store = await getStore();
+            await store.recordMetric("arousal_modulation", delta, state.sessionId ?? undefined);
+          } catch {
+            // Fire-safe.
+          }
+        })();
+      }
+    },
+
+    // Synthetic-brain Phase 5: memory notes in tool descriptions.
+    // Reflex path (ADR-010): synchronous, cache-only, <5ms. Appends a one-line
+    // note from the top reflex rule to the tool's description. Default off
+    // (brain.toolDefinitionNotes !== false gate).
+    "tool.definition": (
+      input: { toolID?: string },
+      output: { description?: string },
+    ) => {
+      recordHookFired(getStore, state.probe, "tool.definition");
+
+      const brainConfig = state.config as {
+        brain?: { toolDefinitionNotes?: boolean };
+      };
+      if (brainConfig.brain?.toolDefinitionNotes !== true) return;
+
+      const toolID = input?.toolID;
+      if (!toolID || typeof output.description !== "string") return;
+
+      const cache = state.reflexCache;
+      const rule = matchTool(cache, toolID);
+      if (!rule) return;
+
+      const noteText = rule.note.slice(0, 100);
+      output.description = `${output.description} **Project note (realmemory): ${noteText}**`;
+
+      void (async () => {
+        try {
+          const store = await getStore();
+          await store.recordMetric(`tool_definition_note:${rule.memoryId}`, 1, state.sessionId ?? undefined);
+        } catch {
+          // Fire-safe.
         }
       })();
     },

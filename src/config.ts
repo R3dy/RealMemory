@@ -170,6 +170,20 @@ export function validateConfig(config: MemoryStoreConfig): void {
       throw new Error(`brain.inhibition must be one of: ${valid.join(", ")}`);
     }
   }
+  // Synthetic-brain Phase 5: brain.arousalModulation validation.
+  if (
+    config.brain?.arousalModulation !== undefined &&
+    typeof config.brain.arousalModulation !== "boolean"
+  ) {
+    throw new Error("brain.arousalModulation must be a boolean");
+  }
+  // Synthetic-brain Phase 5: brain.toolDefinitionNotes validation.
+  if (
+    config.brain?.toolDefinitionNotes !== undefined &&
+    typeof config.brain.toolDefinitionNotes !== "boolean"
+  ) {
+    throw new Error("brain.toolDefinitionNotes must be a boolean");
+  }
   // Synthetic-brain Phase 3: brain.workingMemory + workingMemoryTokens validation.
   if (
     config.brain?.workingMemory !== undefined &&

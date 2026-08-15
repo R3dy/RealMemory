@@ -29,6 +29,7 @@ export const ALWAYS_FIRE_HOOKS = [
   "event:session.idle",
   "chat.message",
   "experimental.chat.system.transform",
+  "chat.params",
 ] as const;
 
 /**
@@ -39,6 +40,7 @@ export const CONDITIONAL_HOOKS = [
   "tool.execute.after",
   "experimental.session.compacting",
   "tool.execute.before",
+  "tool.definition",
 ] as const;
 
 /** All probed hooks (single source of truth — 6 entries). */

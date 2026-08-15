@@ -490,6 +490,12 @@ function validateConfig(config) {
       throw new Error(`brain.inhibition must be one of: ${valid.join(", ")}`);
     }
   }
+  if (config.brain?.arousalModulation !== void 0 && typeof config.brain.arousalModulation !== "boolean") {
+    throw new Error("brain.arousalModulation must be a boolean");
+  }
+  if (config.brain?.toolDefinitionNotes !== void 0 && typeof config.brain.toolDefinitionNotes !== "boolean") {
+    throw new Error("brain.toolDefinitionNotes must be a boolean");
+  }
   if (config.brain?.workingMemory !== void 0 && typeof config.brain.workingMemory !== "boolean") {
     throw new Error("brain.workingMemory must be a boolean");
   }
@@ -3539,7 +3545,7 @@ function createMcpTools(store) {
   ];
 }
 var SERVER_NAME = "realmemory";
-var SERVER_VERSION = "0.10.0";
+var SERVER_VERSION = "0.11.0";
 async function startMcpServer(config, opts) {
   const mergedConfig = config ?? loadConfig();
   const ownLifecycle = opts?.ownLifecycle ?? false;

@@ -370,6 +370,19 @@ interface MemoryStoreConfig {
          * Default 800. Validated [200, 4000].
          */
         workingMemoryTokens?: number;
+        /**
+         * Synthetic-brain Phase 5: arousal-based temperature modulation. Default
+         * false (opt-in). When true, high arousal (recent corrections/blocks/
+         * surprises) lowers the model's temperature by up to 0.15. Never raises
+         * temperature above the agent's setting.
+         */
+        arousalModulation?: boolean;
+        /**
+         * Synthetic-brain Phase 5: memory notes in tool descriptions. Default
+         * false (opt-in). When true, the top reflex rule for a tool appends a
+         * one-line note to the tool's description (present at tool selection time).
+         */
+        toolDefinitionNotes?: boolean;
     };
 }
 /**

@@ -237,4 +237,27 @@ describe("validateConfig()", () => {
       validateConfig({ brain: { inhibition: "delete" } as unknown as { inhibition?: "off" | "warn" | "rewrite" | "block" } }),
     ).toThrow(/brain.inhibition must be one of/);
   });
+
+  // Synthetic-brain Phase 5: arousalModulation + toolDefinitionNotes validation
+  it("accepts boolean arousalModulation", () => {
+    expect(() => validateConfig({ brain: { arousalModulation: true } })).not.toThrow();
+    expect(() => validateConfig({ brain: { arousalModulation: false } })).not.toThrow();
+  });
+
+  it("rejects non-boolean arousalModulation", () => {
+    expect(() => validateConfig({ brain: { arousalModulation: "yes" } as unknown as { arousalModulation?: boolean } })).toThrow(
+      /brain.arousalModulation must be a boolean/,
+    );
+  });
+
+  it("accepts boolean toolDefinitionNotes", () => {
+    expect(() => validateConfig({ brain: { toolDefinitionNotes: true } })).not.toThrow();
+    expect(() => validateConfig({ brain: { toolDefinitionNotes: false } })).not.toThrow();
+  });
+
+  it("rejects non-boolean toolDefinitionNotes", () => {
+    expect(() => validateConfig({ brain: { toolDefinitionNotes: "yes" } as unknown as { toolDefinitionNotes?: boolean } })).toThrow(
+      /brain.toolDefinitionNotes must be a boolean/,
+    );
+  });
 });

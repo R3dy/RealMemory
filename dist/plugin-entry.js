@@ -6,7 +6,7 @@ import {
   recordLandsOutcome,
   resetProbeForSession,
   resolveHostVersion
-} from "./chunk-YEH47ZG6.js";
+} from "./chunk-5YZ4KHMI.js";
 import {
   classifyIntent,
   deriveProjectId,
@@ -16,11 +16,18 @@ import {
 import {
   MemoryStore,
   loadConfig
-} from "./chunk-P7ZDGXW7.js";
+} from "./chunk-AA3KVJ3T.js";
 
 // src/reflex.ts
 var REFLEX_WEIGHT_FLOOR = 0.3;
 var REFLEX_RULE_CAP = 100;
+var AROUSAL_TEMP_DELTA = 0.15;
+var AROUSAL_THRESHOLD = 0.3;
+var AROUSAL_NORMALIZATION = 3;
+var AROUSAL_WEIGHT_CORRECTION = 1;
+var AROUSAL_WEIGHT_BLOCK = 0.8;
+var AROUSAL_WEIGHT_HIGH_SURPRISE = 0.6;
+var AROUSAL_WINDOW = 5;
 var PREFERENCES_CAP = 10;
 var SEARCH_LIMIT = 200;
 var NOTE_MAX_LENGTH = 120;
@@ -38,7 +45,9 @@ function compileRule(memory) {
   const command = typeof metadata.command === "string" ? metadata.command : null;
   const filePath = typeof metadata.filePath === "string" ? metadata.filePath : null;
   let matcher = null;
+  let toolName;
   if (command) {
+    toolName = "bash";
     const cmdSubstring = command.slice(0, 100);
     matcher = (call) => {
       if (call.tool !== "bash") return false;
@@ -47,6 +56,7 @@ function compileRule(memory) {
       return callCommand.includes(cmdSubstring);
     };
   } else if (filePath) {
+    toolName = "read";
     const pathSubstring = filePath.slice(0, 200);
     matcher = (call) => {
       if (call.tool !== "read") return false;
@@ -74,6 +84,7 @@ function compileRule(memory) {
     match: matcher,
     rewrite,
     blockEligible,
+    tool: toolName,
     note,
     salience: Math.max(0, Math.min(1, memory.weight)),
     confidence: Math.max(0, Math.min(1, memory.confidence))
@@ -151,6 +162,32 @@ function decrementRuleConfidence(cache, memoryId, amount) {
   cache.rules.sort(
     (a, b) => b.salience * b.confidence - a.salience * a.confidence
   );
+}
+function emptyArousalTracker() {
+  return { signals: [] };
+}
+function computeArousal(tracker) {
+  if (tracker.signals.length === 0) return 0;
+  let sum = 0;
+  for (const s of tracker.signals) {
+    if (s.correction) sum += AROUSAL_WEIGHT_CORRECTION;
+    if (s.block) sum += AROUSAL_WEIGHT_BLOCK;
+    if (s.highSurprise) sum += AROUSAL_WEIGHT_HIGH_SURPRISE;
+  }
+  return Math.min(1, sum / AROUSAL_NORMALIZATION);
+}
+function pushArousalSignal(tracker, signal) {
+  tracker.signals.push(signal);
+  if (tracker.signals.length > AROUSAL_WINDOW) {
+    tracker.signals.shift();
+  }
+}
+function matchTool(cache, toolName) {
+  if (!cache || cache.rules.length === 0) return null;
+  for (const rule of cache.rules) {
+    if (rule.tool === toolName) return rule;
+  }
+  return null;
 }
 
 // src/predict.ts
@@ -657,7 +694,8 @@ async function realmemoryPlugin(ctx) {
     pendingPredictions: /* @__PURE__ */ new Map(),
     predictionCounter: 0,
     lastPredictionOutcome: null,
-    lastBlock: null
+    lastBlock: null,
+    arousalTracker: emptyArousalTracker()
   };
   state.probe.hostVersion = resolveHostVersion(ctx);
   async function getStore() {
@@ -716,6 +754,7 @@ async function realmemoryPlugin(ctx) {
           resetProbeForSession(state.probe, sid);
           state.sessionId = sid;
         }
+        state.arousalTracker = emptyArousalTracker();
         recordHookFired(getStore, state.probe, "event:session.created");
         try {
           const store = await getStore();
@@ -791,6 +830,14 @@ async function realmemoryPlugin(ctx) {
       }
       if (event.type === "session.idle") {
         recordHookFired(getStore, state.probe, "event:session.idle");
+        pushArousalSignal(state.arousalTracker, {
+          correction: state.lastUserIntent === "correction",
+          block: state.lastBlock !== null,
+          highSurprise: state.lastPredictionOutcome !== null && state.lastPredictionOutcome.surprise >= 0.5
+        });
+        if (state.reflexCache) {
+          state.reflexCache.arousal = computeArousal(state.arousalTracker);
+        }
         state.pendingPredictions.clear();
         state.lastPredictionOutcome = null;
         state.lastBlock = null;
@@ -1365,6 +1412,53 @@ async function realmemoryPlugin(ctx) {
             "error",
             `Compacting hygiene failed: ${error instanceof Error ? error.message : String(error)}`
           );
+        }
+      })();
+    },
+    // Synthetic-brain Phase 5: arousal-based temperature modulation.
+    // Reflex path (ADR-010): synchronous, cache-only, <5ms. Reads
+    // ReflexCache.arousal (in-RAM) and clamps temperature DOWN by up to 0.15.
+    // Never increases temperature above the agent's setting. Default off
+    // (brain.arousalModulation !== false gate).
+    "chat.params": (_input, output) => {
+      recordHookFired(getStore, state.probe, "chat.params");
+      const brainConfig = state.config;
+      if (brainConfig.brain?.arousalModulation !== true) return;
+      const cache = state.reflexCache;
+      if (!cache || cache.arousal < AROUSAL_THRESHOLD) return;
+      if (typeof output.temperature === "number" && output.temperature > 0) {
+        const delta = cache.arousal * AROUSAL_TEMP_DELTA;
+        const newTemp = Math.max(0, output.temperature - delta);
+        output.temperature = newTemp;
+        void (async () => {
+          try {
+            const store = await getStore();
+            await store.recordMetric("arousal_modulation", delta, state.sessionId ?? void 0);
+          } catch {
+          }
+        })();
+      }
+    },
+    // Synthetic-brain Phase 5: memory notes in tool descriptions.
+    // Reflex path (ADR-010): synchronous, cache-only, <5ms. Appends a one-line
+    // note from the top reflex rule to the tool's description. Default off
+    // (brain.toolDefinitionNotes !== false gate).
+    "tool.definition": (input, output) => {
+      recordHookFired(getStore, state.probe, "tool.definition");
+      const brainConfig = state.config;
+      if (brainConfig.brain?.toolDefinitionNotes !== true) return;
+      const toolID = input?.toolID;
+      if (!toolID || typeof output.description !== "string") return;
+      const cache = state.reflexCache;
+      const rule = matchTool(cache, toolID);
+      if (!rule) return;
+      const noteText = rule.note.slice(0, 100);
+      output.description = `${output.description} **Project note (realmemory): ${noteText}**`;
+      void (async () => {
+        try {
+          const store = await getStore();
+          await store.recordMetric(`tool_definition_note:${rule.memoryId}`, 1, state.sessionId ?? void 0);
+        } catch {
         }
       })();
     }
