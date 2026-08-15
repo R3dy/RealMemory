@@ -35,6 +35,8 @@ export interface ReflexRule {
   rewrite?: (args: Record<string, unknown>) => Record<string, unknown>;
   /** If true, this rule is eligible to block (category safety|cost). Phase 4a. */
   blockEligible?: boolean;
+  /** The tool this rule targets ("bash", "read", etc.) — for tool.definition matching. Phase 5. */
+  tool?: string;
   /** The note shown to the model when the rule fires. */
   note: string;
   /** 0..1 — drives ordering (higher = more salient). */
@@ -64,6 +66,23 @@ export const REFLEX_WEIGHT_FLOOR = 0.3;
 
 /** Maximum rules in the cache. */
 export const REFLEX_RULE_CAP = 100;
+
+/** Phase 5: arousal temperature delta (max clamp-down). */
+export const AROUSAL_TEMP_DELTA = 0.15;
+
+/** Phase 5: arousal threshold — below this, no modulation. */
+export const AROUSAL_THRESHOLD = 0.3;
+
+/** Phase 5: arousal normalization — N bad outcomes = arousal 1.0. */
+export const AROUSAL_NORMALIZATION = 3;
+
+/** Phase 5: arousal signal weights. */
+export const AROUSAL_WEIGHT_CORRECTION = 1.0;
+export const AROUSAL_WEIGHT_BLOCK = 0.8;
+export const AROUSAL_WEIGHT_HIGH_SURPRISE = 0.6;
+
+/** Phase 5: arousal ring buffer size (last N turns). */
+export const AROUSAL_WINDOW = 5;
 
 /** Maximum preferences entries. */
 export const PREFERENCES_CAP = 10;
@@ -112,8 +131,10 @@ export function compileRule(memory: Memory): ReflexRule | null {
 
   // Extract a matcher from the memory's metadata.
   let matcher: RegExp | ((call: ToolCall) => boolean) | null = null;
+  let toolName: string | undefined;
 
   if (command) {
+    toolName = "bash";
     // Bash tool: match when the call's command includes the stored command substring.
     const cmdSubstring = command.slice(0, 100);
     matcher = (call: ToolCall): boolean => {
@@ -123,6 +144,7 @@ export function compileRule(memory: Memory): ReflexRule | null {
       return callCommand.includes(cmdSubstring);
     };
   } else if (filePath) {
+    toolName = "read";
     // Read tool: match when the call's filePath includes the stored path substring.
     const pathSubstring = filePath.slice(0, 200);
     matcher = (call: ToolCall): boolean => {
@@ -170,6 +192,7 @@ export function compileRule(memory: Memory): ReflexRule | null {
     match: matcher,
     rewrite,
     blockEligible,
+    tool: toolName,
     note,
     salience: Math.max(0, Math.min(1, memory.weight)),
     confidence: Math.max(0, Math.min(1, memory.confidence)),
@@ -350,4 +373,74 @@ export function decrementRuleConfidence(
   cache.rules.sort(
     (a, b) => b.salience * b.confidence - a.salience * a.confidence,
   );
+}
+
+// ---------------------------------------------------------------------------
+// Phase 5: Arousal (chat.params modulation)
+// ---------------------------------------------------------------------------
+
+/** A per-turn arousal signal — which bad outcomes occurred this turn. */
+export interface ArousalSignal {
+  correction: boolean;
+  block: boolean;
+  highSurprise: boolean;
+}
+
+/** A ring buffer of the last AROUSAL_WINDOW arousal signals. */
+export interface ArousalTracker {
+  signals: ArousalSignal[];
+}
+
+/** Create an empty arousal tracker. */
+export function emptyArousalTracker(): ArousalTracker {
+  return { signals: [] };
+}
+
+/**
+ * Compute arousal (0..1) from the tracker's rolling window.
+ *
+ * arousal = min(1, sum(signal_weights) / AROUSAL_NORMALIZATION)
+ *
+ * 3 bad outcomes in 5 turns → arousal 1.0. Each correction = 1.0,
+ * each block = 0.8, each high-surprise = 0.6.
+ */
+export function computeArousal(tracker: ArousalTracker): number {
+  if (tracker.signals.length === 0) return 0;
+  let sum = 0;
+  for (const s of tracker.signals) {
+    if (s.correction) sum += AROUSAL_WEIGHT_CORRECTION;
+    if (s.block) sum += AROUSAL_WEIGHT_BLOCK;
+    if (s.highSurprise) sum += AROUSAL_WEIGHT_HIGH_SURPRISE;
+  }
+  return Math.min(1, sum / AROUSAL_NORMALIZATION);
+}
+
+/**
+ * Push an arousal signal onto the tracker, evicting the oldest if over capacity.
+ */
+export function pushArousalSignal(tracker: ArousalTracker, signal: ArousalSignal): void {
+  tracker.signals.push(signal);
+  if (tracker.signals.length > AROUSAL_WINDOW) {
+    tracker.signals.shift();
+  }
+}
+
+/**
+ * Phase 5: find the top reflex rule matching a tool name (for tool.definition).
+ *
+ * Matches on the rule's `tool` field (set at compile time by compileRule),
+ * NOT on the full predicate — tool.definition fires before the agent proposes
+ * specific args, so we only know the tool name, not what command it will run.
+ * The note is still relevant ("this tool has burned you before") even without
+ * the specific command.
+ *
+ * Scans cache.rules (sorted by salience × confidence desc) and returns the
+ * first rule whose `tool` field matches.
+ */
+export function matchTool(cache: ReflexCache | null, toolName: string): ReflexRule | null {
+  if (!cache || cache.rules.length === 0) return null;
+  for (const rule of cache.rules) {
+    if (rule.tool === toolName) return rule;
+  }
+  return null;
 }

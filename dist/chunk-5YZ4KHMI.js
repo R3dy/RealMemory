@@ -1,18 +1,20 @@
 import {
   generateUlid
-} from "./chunk-P7ZDGXW7.js";
+} from "./chunk-AA3KVJ3T.js";
 
 // src/hook-probe.ts
 var ALWAYS_FIRE_HOOKS = [
   "event:session.created",
   "event:session.idle",
   "chat.message",
-  "experimental.chat.system.transform"
+  "experimental.chat.system.transform",
+  "chat.params"
 ];
 var CONDITIONAL_HOOKS = [
   "tool.execute.after",
   "experimental.session.compacting",
-  "tool.execute.before"
+  "tool.execute.before",
+  "tool.definition"
 ];
 var PROBED_HOOKS = [...ALWAYS_FIRE_HOOKS, ...CONDITIONAL_HOOKS];
 function createProbeState() {
