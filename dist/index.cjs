@@ -496,6 +496,15 @@ function validateConfig(config) {
   if (config.brain?.toolDefinitionNotes !== void 0 && typeof config.brain.toolDefinitionNotes !== "boolean") {
     throw new Error("brain.toolDefinitionNotes must be a boolean");
   }
+  if (config.brain?.schemaFormation !== void 0 && typeof config.brain.schemaFormation !== "boolean") {
+    throw new Error("brain.schemaFormation must be a boolean");
+  }
+  if (config.brain?.schemaFormationThreshold !== void 0 && (typeof config.brain.schemaFormationThreshold !== "number" || config.brain.schemaFormationThreshold < 0.5 || config.brain.schemaFormationThreshold > 1)) {
+    throw new Error("brain.schemaFormationThreshold must be a number in [0.5, 1]");
+  }
+  if (config.brain?.schemaFormationMinCluster !== void 0 && (!Number.isInteger(config.brain.schemaFormationMinCluster) || config.brain.schemaFormationMinCluster < 2)) {
+    throw new Error("brain.schemaFormationMinCluster must be an integer >= 2");
+  }
   if (config.brain?.workingMemory !== void 0 && typeof config.brain.workingMemory !== "boolean") {
     throw new Error("brain.workingMemory must be a boolean");
   }
@@ -1571,6 +1580,43 @@ var MemoryStore = class {
     } catch {
     }
     return merges;
+  }
+  /**
+   * Synthetic-brain Phase 6: return active episodic memories (types
+   * `lesson_learned`, `contextual_note`) with their embeddings, for the
+   * consolidation pass (`consolidate.ts`). Bounded scan: at most 1000
+   * most-recently-touched. Memories with an existing `derived_from` edge
+   * to a `task_pattern` are excluded (idempotency — they've already been
+   * consolidated). Fire-safe — returns empty array on error.
+   */
+  async getConsolidationCandidates() {
+    if (!this.db) return [];
+    try {
+      const rows = this.db.prepare(
+        "SELECT id, content, type, scope, weight, confidence, tags, domain, embedding, updated_at FROM memories WHERE status = 'active' AND type IN ('lesson_learned', 'contextual_note') ORDER BY updated_at DESC LIMIT 1000"
+      ).all();
+      const consolidated = /* @__PURE__ */ new Set();
+      const consolidateStmt = this.db.prepare(
+        "SELECT r.source_id FROM relationships r JOIN memories m ON m.id = r.target_id WHERE r.type = 'derived_from' AND m.type = 'task_pattern' AND r.source_id = ? LIMIT 1"
+      );
+      for (const row of rows) {
+        const existing = consolidateStmt.get(row.id);
+        if (existing) consolidated.add(row.id);
+      }
+      return rows.filter((r) => !consolidated.has(r.id)).map((r) => ({
+        id: r.id,
+        content: r.content,
+        type: r.type,
+        scope: r.scope,
+        weight: r.weight,
+        confidence: r.confidence,
+        tags: JSON.parse(r.tags),
+        domain: r.domain,
+        embedding: embeddingFromBuffer(r.embedding)
+      }));
+    } catch {
+      return [];
+    }
   }
   /**
    * Patch an existing active memory. Content is scrubbed; tags are replaced
@@ -3195,6 +3241,10 @@ async function handleRequest(req, res, store, visNetworkJs) {
     res.end();
     return;
   }
+  if (pathname === "/health") {
+    sendJson(res, 200, { ok: true });
+    return;
+  }
   if (pathname === "/api/stats") {
     const stats = await store.getStats();
     sendJson(res, 200, stats);
@@ -3628,7 +3678,7 @@ function createMcpTools(store) {
   ];
 }
 var SERVER_NAME = "realmemory";
-var SERVER_VERSION = "0.12.0";
+var SERVER_VERSION = "0.13.0";
 async function startMcpServer(config, opts) {
   const mergedConfig = config ?? loadConfig();
   const ownLifecycle = opts?.ownLifecycle ?? false;

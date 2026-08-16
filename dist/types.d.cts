@@ -383,6 +383,24 @@ interface MemoryStoreConfig {
          * one-line note to the tool's description (present at tool selection time).
          */
         toolDefinitionNotes?: boolean;
+        /**
+         * Synthetic-brain Phase 6: schema formation (episodic-to-semantic
+         * consolidation). When true (effective default — the field's absence
+         * enables the pass), the compacting hook runs consolidatePass to cluster
+         * episodic memories and synthesize abstract rules. Gated on `!== false`,
+         * mirroring the established brain.reflex / brain.predictionError pattern.
+         */
+        schemaFormation?: boolean;
+        /**
+         * Phase 6: cosine similarity threshold for clustering episodic memories.
+         * Default 0.80 (inclusive). Validated [0.5, 1.0].
+         */
+        schemaFormationThreshold?: number;
+        /**
+         * Phase 6: minimum cluster size to trigger synthesis. Default 3.
+         * Validated integer >= 2.
+         */
+        schemaFormationMinCluster?: number;
     };
 }
 /**

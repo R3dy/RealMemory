@@ -5,6 +5,9 @@ var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
 var __getOwnPropNames = Object.getOwnPropertyNames;
 var __getProtoOf = Object.getPrototypeOf;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __esm = (fn, res) => function __init() {
+  return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
+};
 var __export = (target, all) => {
   for (var name in all)
     __defProp(target, name, { get: all[name], enumerable: true });
@@ -26,6 +29,145 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
   mod
 ));
 var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+
+// src/similarity.ts
+function cosineSimilarity(a, b) {
+  if (a.length !== b.length || a.length === 0) return 0;
+  let dot = 0;
+  let normA = 0;
+  let normB = 0;
+  for (let i = 0; i < a.length; i++) {
+    const av = a[i];
+    const bv = b[i];
+    dot += av * bv;
+    normA += av * av;
+    normB += bv * bv;
+  }
+  if (normA === 0 || normB === 0) return 0;
+  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
+}
+function embeddingFromBuffer(buf) {
+  if (!buf || buf.byteLength === 0) return null;
+  if (buf.byteLength % 4 !== 0) return null;
+  return new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4);
+}
+function embeddingToBuffer(vec) {
+  return Buffer.from(vec.buffer, vec.byteOffset, vec.byteLength);
+}
+var init_similarity = __esm({
+  "src/similarity.ts"() {
+    "use strict";
+  }
+});
+
+// src/consolidate.ts
+var consolidate_exports = {};
+__export(consolidate_exports, {
+  consolidatePass: () => consolidatePass,
+  findClusters: () => findClusters,
+  synthesizeRule: () => synthesizeRule
+});
+function findClusters(candidates, threshold = 0.8, minCluster = 3) {
+  const withEmbeddings = candidates.filter((c) => c.embedding !== null);
+  if (withEmbeddings.length < minCluster) return [];
+  const byType = /* @__PURE__ */ new Map();
+  for (const c of withEmbeddings) {
+    if (!byType.has(c.type)) byType.set(c.type, []);
+    byType.get(c.type).push(c);
+  }
+  const clusters = [];
+  for (const [, group] of byType) {
+    if (group.length < minCluster) continue;
+    const assigned = /* @__PURE__ */ new Set();
+    for (let i = 0; i < group.length; i++) {
+      if (assigned.has(group[i].id)) continue;
+      const cluster = [group[i]];
+      for (let j = 0; j < group.length; j++) {
+        if (i === j) continue;
+        if (assigned.has(group[j].id)) continue;
+        const sim = cosineSimilarity(
+          group[i].embedding,
+          group[j].embedding
+        );
+        if (sim >= threshold) {
+          cluster.push(group[j]);
+        }
+      }
+      if (cluster.length >= minCluster) {
+        for (const m of cluster) assigned.add(m.id);
+        const representative = cluster.reduce(
+          (a, b) => a.weight >= b.weight ? a : b
+        );
+        clusters.push({ episodes: cluster, representative });
+      }
+    }
+  }
+  return clusters;
+}
+function synthesizeRule(cluster) {
+  const episodes = cluster.episodes;
+  const rep = cluster.representative;
+  const allProject = episodes.every((e) => e.scope === "project");
+  const scope = allProject ? "project" : "global";
+  const tagIntersection = episodes.reduce((acc, e, idx) => {
+    if (idx === 0) return new Set(e.tags);
+    for (const t of acc) {
+      if (!e.tags.includes(t)) acc.delete(t);
+    }
+    return acc;
+  }, /* @__PURE__ */ new Set());
+  const maxConfidence = Math.max(...episodes.map((e) => e.confidence));
+  const confidence = Math.min(1, maxConfidence + 0.1 * (episodes.length - 1));
+  return {
+    content: rep.content,
+    type: "task_pattern",
+    scope,
+    tags: Array.from(tagIntersection),
+    domain: rep.domain ?? void 0,
+    confidence,
+    metadata: {
+      synthesized: true,
+      sourceEpisodeIds: episodes.map((e) => e.id),
+      synthesizedAt: (/* @__PURE__ */ new Date()).toISOString()
+    }
+  };
+}
+async function consolidatePass(store, config) {
+  const brain = config.brain ?? {};
+  const threshold = typeof brain.schemaFormationThreshold === "number" ? brain.schemaFormationThreshold : 0.8;
+  const minCluster = typeof brain.schemaFormationMinCluster === "number" ? brain.schemaFormationMinCluster : 3;
+  try {
+    const candidates = await store.getConsolidationCandidates();
+    if (candidates.length === 0) return 0;
+    if (candidates.every((c) => c.embedding === null)) return 0;
+    const clusters = findClusters(candidates, threshold, minCluster);
+    if (clusters.length === 0) return 0;
+    let rulesSynthesized = 0;
+    for (const cluster of clusters) {
+      try {
+        const ruleInput = synthesizeRule(cluster);
+        const rule = await store.store(ruleInput);
+        for (const episode of cluster.episodes) {
+          try {
+            await store.relate(episode.id, rule.id, "derived_from");
+          } catch {
+          }
+        }
+        rulesSynthesized++;
+      } catch {
+      }
+    }
+    return rulesSynthesized;
+  } catch {
+    return 0;
+  }
+}
+var init_consolidate = __esm({
+  "src/consolidate.ts"() {
+    "use strict";
+    init_similarity();
+  }
+});
 
 // src/plugin-entry.ts
 var plugin_entry_exports = {};
@@ -464,6 +606,15 @@ function validateConfig(config) {
   if (config.brain?.toolDefinitionNotes !== void 0 && typeof config.brain.toolDefinitionNotes !== "boolean") {
     throw new Error("brain.toolDefinitionNotes must be a boolean");
   }
+  if (config.brain?.schemaFormation !== void 0 && typeof config.brain.schemaFormation !== "boolean") {
+    throw new Error("brain.schemaFormation must be a boolean");
+  }
+  if (config.brain?.schemaFormationThreshold !== void 0 && (typeof config.brain.schemaFormationThreshold !== "number" || config.brain.schemaFormationThreshold < 0.5 || config.brain.schemaFormationThreshold > 1)) {
+    throw new Error("brain.schemaFormationThreshold must be a number in [0.5, 1]");
+  }
+  if (config.brain?.schemaFormationMinCluster !== void 0 && (!Number.isInteger(config.brain.schemaFormationMinCluster) || config.brain.schemaFormationMinCluster < 2)) {
+    throw new Error("brain.schemaFormationMinCluster must be an integer >= 2");
+  }
   if (config.brain?.workingMemory !== void 0 && typeof config.brain.workingMemory !== "boolean") {
     throw new Error("brain.workingMemory must be a boolean");
   }
@@ -556,32 +707,8 @@ function createRemoteProvider(config) {
   };
 }
 
-// src/similarity.ts
-function cosineSimilarity(a, b) {
-  if (a.length !== b.length || a.length === 0) return 0;
-  let dot = 0;
-  let normA = 0;
-  let normB = 0;
-  for (let i = 0; i < a.length; i++) {
-    const av = a[i];
-    const bv = b[i];
-    dot += av * bv;
-    normA += av * av;
-    normB += bv * bv;
-  }
-  if (normA === 0 || normB === 0) return 0;
-  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
-}
-function embeddingFromBuffer(buf) {
-  if (!buf || buf.byteLength === 0) return null;
-  if (buf.byteLength % 4 !== 0) return null;
-  return new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4);
-}
-function embeddingToBuffer(vec) {
-  return Buffer.from(vec.buffer, vec.byteOffset, vec.byteLength);
-}
-
 // src/store.ts
+init_similarity();
 var DEFAULT_STORAGE_PATH = (0, import_node_path2.resolve)(
   (0, import_node_os2.homedir)(),
   ".opencode",
@@ -1539,6 +1666,43 @@ var MemoryStore = class {
     } catch {
     }
     return merges;
+  }
+  /**
+   * Synthetic-brain Phase 6: return active episodic memories (types
+   * `lesson_learned`, `contextual_note`) with their embeddings, for the
+   * consolidation pass (`consolidate.ts`). Bounded scan: at most 1000
+   * most-recently-touched. Memories with an existing `derived_from` edge
+   * to a `task_pattern` are excluded (idempotency — they've already been
+   * consolidated). Fire-safe — returns empty array on error.
+   */
+  async getConsolidationCandidates() {
+    if (!this.db) return [];
+    try {
+      const rows = this.db.prepare(
+        "SELECT id, content, type, scope, weight, confidence, tags, domain, embedding, updated_at FROM memories WHERE status = 'active' AND type IN ('lesson_learned', 'contextual_note') ORDER BY updated_at DESC LIMIT 1000"
+      ).all();
+      const consolidated = /* @__PURE__ */ new Set();
+      const consolidateStmt = this.db.prepare(
+        "SELECT r.source_id FROM relationships r JOIN memories m ON m.id = r.target_id WHERE r.type = 'derived_from' AND m.type = 'task_pattern' AND r.source_id = ? LIMIT 1"
+      );
+      for (const row of rows) {
+        const existing = consolidateStmt.get(row.id);
+        if (existing) consolidated.add(row.id);
+      }
+      return rows.filter((r) => !consolidated.has(r.id)).map((r) => ({
+        id: r.id,
+        content: r.content,
+        type: r.type,
+        scope: r.scope,
+        weight: r.weight,
+        confidence: r.confidence,
+        tags: JSON.parse(r.tags),
+        domain: r.domain,
+        embedding: embeddingFromBuffer(r.embedding)
+      }));
+    } catch {
+      return [];
+    }
   }
   /**
    * Patch an existing active memory. Content is scrubbed; tags are replaced
@@ -3576,6 +3740,17 @@ async function realmemoryPlugin(ctx) {
           await store.maybeDecay("decay:compacting", intervalHours);
           await store.dedupPass();
           await store.recordMetric("memory_bloat_ratio", await store.getBloatRatio());
+          const brainConfig = state.config;
+          if (brainConfig.brain?.schemaFormation !== false) {
+            const { consolidatePass: consolidatePass2 } = await Promise.resolve().then(() => (init_consolidate(), consolidate_exports));
+            const rules = await consolidatePass2(
+              store,
+              state.config
+            );
+            if (rules > 0) {
+              await store.recordMetric("schema_formation", rules);
+            }
+          }
         } catch (error) {
           await log(
             "error",

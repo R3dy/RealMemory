@@ -261,3 +261,52 @@ describe("validateConfig()", () => {
     );
   });
 });
+
+describe("brain.schemaFormation validation (Phase 6)", () => {
+  it("accepts boolean schemaFormation", () => {
+    expect(() => validateConfig({ brain: { schemaFormation: true } })).not.toThrow();
+    expect(() => validateConfig({ brain: { schemaFormation: false } })).not.toThrow();
+  });
+
+  it("rejects non-boolean schemaFormation", () => {
+    expect(() => validateConfig({ brain: { schemaFormation: "yes" } as unknown as { schemaFormation?: boolean } })).toThrow(
+      /brain.schemaFormation must be a boolean/,
+    );
+  });
+
+  it("accepts valid schemaFormationThreshold", () => {
+    expect(() => validateConfig({ brain: { schemaFormationThreshold: 0.5 } })).not.toThrow();
+    expect(() => validateConfig({ brain: { schemaFormationThreshold: 0.80 } })).not.toThrow();
+    expect(() => validateConfig({ brain: { schemaFormationThreshold: 1.0 } })).not.toThrow();
+  });
+
+  it("rejects schemaFormationThreshold below 0.5", () => {
+    expect(() => validateConfig({ brain: { schemaFormationThreshold: 0.3 } })).toThrow(
+      /brain.schemaFormationThreshold must be a number in \[0.5, 1\]/,
+    );
+  });
+
+  it("rejects schemaFormationThreshold above 1.0", () => {
+    expect(() => validateConfig({ brain: { schemaFormationThreshold: 1.5 } })).toThrow(
+      /brain.schemaFormationThreshold must be a number in \[0.5, 1\]/,
+    );
+  });
+
+  it("accepts valid schemaFormationMinCluster", () => {
+    expect(() => validateConfig({ brain: { schemaFormationMinCluster: 2 } })).not.toThrow();
+    expect(() => validateConfig({ brain: { schemaFormationMinCluster: 3 } })).not.toThrow();
+    expect(() => validateConfig({ brain: { schemaFormationMinCluster: 10 } })).not.toThrow();
+  });
+
+  it("rejects schemaFormationMinCluster below 2", () => {
+    expect(() => validateConfig({ brain: { schemaFormationMinCluster: 1 } })).toThrow(
+      /brain.schemaFormationMinCluster must be an integer >= 2/,
+    );
+  });
+
+  it("rejects non-integer schemaFormationMinCluster", () => {
+    expect(() => validateConfig({ brain: { schemaFormationMinCluster: 2.5 } })).toThrow(
+      /brain.schemaFormationMinCluster must be an integer >= 2/,
+    );
+  });
+});

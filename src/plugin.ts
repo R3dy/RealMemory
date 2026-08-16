@@ -1340,6 +1340,23 @@ export default async function realmemoryPlugin(
           await store.dedupPass();
           // If maybeDecay didn't run (rate-limited), still record bloat ratio.
           await store.recordMetric("memory_bloat_ratio", await store.getBloatRatio());
+
+          // Synthetic-brain Phase 6: schema formation (episodic-to-semantic
+          // consolidation). Deliberative path (ADR-010): detached, async.
+          // Gated on brain.schemaFormation !== false (default true).
+          const brainConfig = state.config as {
+            brain?: { schemaFormation?: boolean };
+          };
+          if (brainConfig.brain?.schemaFormation !== false) {
+            const { consolidatePass } = await import("./consolidate");
+            const rules = await consolidatePass(
+              store,
+              state.config as import("./types").MemoryStoreConfig,
+            );
+            if (rules > 0) {
+              await store.recordMetric("schema_formation", rules);
+            }
+          }
         } catch (error) {
           await log(
             "error",
