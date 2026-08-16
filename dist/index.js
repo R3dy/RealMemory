@@ -1,7 +1,7 @@
 import {
   createMcpTools,
   startMcpServer
-} from "./chunk-W2T3NAU2.js";
+} from "./chunk-VY4U6X4D.js";
 import {
   classifyIntent,
   deriveProjectId,
@@ -21,15 +21,17 @@ import {
   computeFrequencyFactor,
   computeRecencyFactor,
   computeWeight,
-  cosineSimilarity,
   createEmbeddingProvider,
-  embeddingFromBuffer,
-  embeddingToBuffer,
   loadConfig,
   scrubSecrets,
   validateConfig
-} from "./chunk-X7FIRXHW.js";
+} from "./chunk-K6MQZMEO.js";
 import "./chunk-6F4PWJZI.js";
+import {
+  cosineSimilarity,
+  embeddingFromBuffer,
+  embeddingToBuffer
+} from "./chunk-B5S5KXU7.js";
 
 // src/recall.ts
 var RecallEngine = class {

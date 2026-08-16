@@ -32,6 +32,7 @@ import { loadConfig, validateConfig } from "./config";
 import { createEmbeddingProvider } from "./embeddings";
 import type { EmbeddingProvider } from "./embeddings";
 import { cosineSimilarity, embeddingFromBuffer, embeddingToBuffer } from "./similarity";
+import type { ConsolidationCandidate } from "./consolidate";
 
 const DEFAULT_STORAGE_PATH = resolve(
   homedir(),
@@ -1449,6 +1450,70 @@ export class MemoryStore {
       // dedupPass must never break the caller.
     }
     return merges;
+  }
+
+  /**
+   * Synthetic-brain Phase 6: return active episodic memories (types
+   * `lesson_learned`, `contextual_note`) with their embeddings, for the
+   * consolidation pass (`consolidate.ts`). Bounded scan: at most 1000
+   * most-recently-touched. Memories with an existing `derived_from` edge
+   * to a `task_pattern` are excluded (idempotency — they've already been
+   * consolidated). Fire-safe — returns empty array on error.
+   */
+  async getConsolidationCandidates(): Promise<ConsolidationCandidate[]> {
+    if (!this.db) return [];
+    try {
+      // Fetch active episodic memories, bounded to 1000.
+      const rows = this.db
+        .prepare(
+          "SELECT id, content, type, scope, weight, confidence, tags, domain, embedding, updated_at " +
+            "FROM memories WHERE status = 'active' AND type IN ('lesson_learned', 'contextual_note') " +
+            "ORDER BY updated_at DESC LIMIT 1000",
+        )
+        .all() as Array<{
+          id: string;
+          content: string;
+          type: string;
+          scope: string;
+          weight: number;
+          confidence: number;
+          tags: string;
+          domain: string | null;
+          embedding: Uint8Array | null;
+        }>;
+
+      // Filter out memories that already have a derived_from edge to a task_pattern.
+      const consolidated = new Set<string>();
+      const consolidateStmt = this.db.prepare(
+        "SELECT r.source_id FROM relationships r " +
+          "JOIN memories m ON m.id = r.target_id " +
+          "WHERE r.type = 'derived_from' AND m.type = 'task_pattern' AND r.source_id = ? " +
+          "LIMIT 1",
+      );
+      for (const row of rows) {
+        const existing = consolidateStmt.get(row.id) as
+          | { source_id: string }
+          | undefined;
+        if (existing) consolidated.add(row.id);
+      }
+
+      return rows
+        .filter((r) => !consolidated.has(r.id))
+        .map((r) => ({
+          id: r.id,
+          content: r.content,
+          type: r.type,
+          scope: r.scope,
+          weight: r.weight,
+          confidence: r.confidence,
+          tags: JSON.parse(r.tags) as string[],
+          domain: r.domain,
+          embedding: embeddingFromBuffer(r.embedding),
+        }));
+    } catch {
+      // Fire-safe — never break the caller.
+      return [];
+    }
   }
 
   /**

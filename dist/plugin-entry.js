@@ -6,7 +6,7 @@ import {
   recordLandsOutcome,
   resetProbeForSession,
   resolveHostVersion
-} from "./chunk-WJ4QWYD4.js";
+} from "./chunk-2N5IPEKP.js";
 import {
   classifyIntent,
   deriveProjectId,
@@ -16,7 +16,8 @@ import {
 import {
   MemoryStore,
   loadConfig
-} from "./chunk-X7FIRXHW.js";
+} from "./chunk-K6MQZMEO.js";
+import "./chunk-B5S5KXU7.js";
 
 // src/reflex.ts
 var REFLEX_WEIGHT_FLOOR = 0.3;
@@ -1407,6 +1408,17 @@ async function realmemoryPlugin(ctx) {
           await store.maybeDecay("decay:compacting", intervalHours);
           await store.dedupPass();
           await store.recordMetric("memory_bloat_ratio", await store.getBloatRatio());
+          const brainConfig = state.config;
+          if (brainConfig.brain?.schemaFormation !== false) {
+            const { consolidatePass } = await import("./consolidate-GVQGGQEN.js");
+            const rules = await consolidatePass(
+              store,
+              state.config
+            );
+            if (rules > 0) {
+              await store.recordMetric("schema_formation", rules);
+            }
+          }
         } catch (error) {
           await log(
             "error",

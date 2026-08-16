@@ -184,6 +184,28 @@ export function validateConfig(config: MemoryStoreConfig): void {
   ) {
     throw new Error("brain.toolDefinitionNotes must be a boolean");
   }
+  // Synthetic-brain Phase 6: brain.schemaFormation validation.
+  if (
+    config.brain?.schemaFormation !== undefined &&
+    typeof config.brain.schemaFormation !== "boolean"
+  ) {
+    throw new Error("brain.schemaFormation must be a boolean");
+  }
+  if (
+    config.brain?.schemaFormationThreshold !== undefined &&
+    (typeof config.brain.schemaFormationThreshold !== "number" ||
+      config.brain.schemaFormationThreshold < 0.5 ||
+      config.brain.schemaFormationThreshold > 1)
+  ) {
+    throw new Error("brain.schemaFormationThreshold must be a number in [0.5, 1]");
+  }
+  if (
+    config.brain?.schemaFormationMinCluster !== undefined &&
+    (!Number.isInteger(config.brain.schemaFormationMinCluster) ||
+      config.brain.schemaFormationMinCluster < 2)
+  ) {
+    throw new Error("brain.schemaFormationMinCluster must be an integer >= 2");
+  }
   // Synthetic-brain Phase 3: brain.workingMemory + workingMemoryTokens validation.
   if (
     config.brain?.workingMemory !== undefined &&

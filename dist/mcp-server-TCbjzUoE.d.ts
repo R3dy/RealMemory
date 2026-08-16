@@ -1,5 +1,32 @@
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
-import { MemoryStoreConfig, StoreInput, Memory, MemoryWithRelations, ListQuery, ListResult, ForgetResult, RecallQuery, RecallResult, SearchQuery, SearchResult, RelationshipType, Relationship, MemoryType, UpdatePatch } from './types.cjs';
+import { MemoryStoreConfig, StoreInput, Memory, MemoryWithRelations, ListQuery, ListResult, ForgetResult, RecallQuery, RecallResult, SearchQuery, SearchResult, RelationshipType, Relationship, MemoryType, UpdatePatch } from './types.js';
+
+/**
+ * Synthetic-brain Phase 6: schema formation (episodic-to-semantic consolidation).
+ *
+ * When >= N episodic memories cluster above a similarity threshold, synthesize
+ * one abstract rule (`task_pattern`), link it `derived_from` each episode, then
+ * let the episodes decay normally. The store converges on rules whose count
+ * tracks the number of distinct things true about the project, not the number
+ * of events.
+ *
+ * Design doc: docs/architecture/synthetic-brain.md §4.6.
+ * Deliberative path (ADR-010): detached, async, runs on compaction. Fire-safe
+ * — errors are caught and never thrown (INV-017).
+ */
+
+/** A memory row with its embedding deserialized, for clustering. */
+interface ConsolidationCandidate {
+    id: string;
+    content: string;
+    type: string;
+    scope: string;
+    weight: number;
+    confidence: number;
+    tags: string[];
+    domain: string | null;
+    embedding: Float32Array | null;
+}
 
 /**
  * The core persistent-memory store. Backed by SQLite (with full-text and
@@ -185,6 +212,15 @@ declare class MemoryStore {
      * Fire-safe — errors are caught and logged, never thrown (INV-017).
      */
     dedupPass(): Promise<number>;
+    /**
+     * Synthetic-brain Phase 6: return active episodic memories (types
+     * `lesson_learned`, `contextual_note`) with their embeddings, for the
+     * consolidation pass (`consolidate.ts`). Bounded scan: at most 1000
+     * most-recently-touched. Memories with an existing `derived_from` edge
+     * to a `task_pattern` are excluded (idempotency — they've already been
+     * consolidated). Fire-safe — returns empty array on error.
+     */
+    getConsolidationCandidates(): Promise<ConsolidationCandidate[]>;
     /**
      * Patch an existing active memory. Content is scrubbed; tags are replaced
      * (not merged); metadata is merged with existing. `reinforce: true` bumps

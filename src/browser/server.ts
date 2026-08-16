@@ -174,6 +174,11 @@ async function handleRequest(
     return;
   }
 
+  if (pathname === "/health") {
+    sendJson(res, 200, { ok: true });
+    return;
+  }
+
   if (pathname === "/api/stats") {
     const stats = await store.getStats();
     sendJson(res, 200, stats);

@@ -1,7 +1,7 @@
 import {
   MemoryStore,
   loadConfig
-} from "./chunk-X7FIRXHW.js";
+} from "./chunk-K6MQZMEO.js";
 
 // src/mcp-server.ts
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -1233,6 +1233,10 @@ async function handleRequest(req, res, store, visNetworkJs) {
     res.end();
     return;
   }
+  if (pathname === "/health") {
+    sendJson(res, 200, { ok: true });
+    return;
+  }
   if (pathname === "/api/stats") {
     const stats = await store.getStats();
     sendJson(res, 200, stats);
@@ -1666,7 +1670,7 @@ function createMcpTools(store) {
   ];
 }
 var SERVER_NAME = "realmemory";
-var SERVER_VERSION = "0.12.0";
+var SERVER_VERSION = "0.13.0";
 async function startMcpServer(config, opts) {
   const mergedConfig = config ?? loadConfig();
   const ownLifecycle = opts?.ownLifecycle ?? false;
