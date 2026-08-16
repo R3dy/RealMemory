@@ -93,6 +93,13 @@ describe("browser server", () => {
     expect(res.status).toBe(204);
   });
 
+  it("GET /health returns 200 with { ok: true }", async () => {
+    const res = await request("/health");
+    expect(res.status).toBe(200);
+    expect(res.contentType).toContain("application/json");
+    expect(JSON.parse(res.body)).toEqual({ ok: true });
+  });
+
   it("GET /api/stats returns 200 with the stats shape", async () => {
     const res = await request("/api/stats");
     expect(res.status).toBe(200);
