@@ -100,6 +100,13 @@ describe("browser server", () => {
     expect(JSON.parse(res.body)).toEqual({ ok: true });
   });
 
+  it("GET /version returns 200 with { version: \"0.9.0\" }", async () => {
+    const res = await request("/version");
+    expect(res.status).toBe(200);
+    expect(res.contentType).toContain("application/json");
+    expect(JSON.parse(res.body)).toEqual({ version: "0.9.0" });
+  });
+
   it("GET /api/stats returns 200 with the stats shape", async () => {
     const res = await request("/api/stats");
     expect(res.status).toBe(200);

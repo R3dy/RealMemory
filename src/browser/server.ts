@@ -179,6 +179,11 @@ async function handleRequest(
     return;
   }
 
+  if (pathname === "/version") {
+    sendJson(res, 200, { version: "0.9.0" });
+    return;
+  }
+
   if (pathname === "/api/stats") {
     const stats = await store.getStats();
     sendJson(res, 200, stats);

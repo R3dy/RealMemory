@@ -15,12 +15,12 @@ autonomous_mode: true
 | 2 Planning | COMPLETE | docs/api-design.md + 5 ADRs |
 | 3 Solutioning | COMPLETE | docs/solutioning/epics.md + backlog.md + dependency-graph.md |
 | 4 Implementation | COMPLETE | 20 stories, 265 tests, all merged to main |
-| 5 Launch | COMPLETE | v0.11.0 — built Aug 14 2026; brain-loop ACTIVE in host OpenCode; synthetic-brain Phase 0 + Phase 1 + Phase 2 + Phase 3 + Phase 4a + Phase 5 shipped. Distributed via git-install (`realmemory@git+https://github.com/R3dy/RealMemory.git`) — npm publish is OFF the table (Royce has no npm login). |
+| 5 Launch | COMPLETE | v0.13.0 — built Aug 15 2026; brain-loop ACTIVE in host OpenCode; synthetic-brain Phase 0 + Phase 1 + Phase 2 + Phase 3 + Phase 4a + Phase 5 + Phase 6 + Phase 7 shipped. Loaded live via local path (`realmemory@/home/royce/mission-control/PROJECTS/realmemory/repo`); npm publish OFF the table (Royce has no npm login). |
 
 ## Plugin status (live in this environment)
 
-- **Installed version:** 0.6.0 (repo `package.json`). Built `2026-08-12` (`dist/plugin-entry.js`).
-- **Loaded as:** OpenCode plugin (git-install: `realmemory@git+https://github.com/R3dy/RealMemory.git` in `~/.config/opencode/opencode.json` `plugin` array — switched from local path Aug 12 2026) AND MCP server (`type: "local"` command pointing at `PROJECTS/realmemory/repo/dist/bin.js`). Stale ghost cache at `~/.cache/opencode/packages/realmemory@git+https:` was cleared; OpenCode will re-clone from `origin/main` (HEAD: `9444aaf`, v0.6.0) on next restart.
+- **Installed version:** 0.13.0 (repo `package.json`). Built `2026-08-15` (`dist/plugin-entry.js`, fresh — mtime after last `src/plugin.ts` edit).
+- **Loaded as:** OpenCode plugin via LOCAL PATH (`realmemory@/home/royce/mission-control/PROJECTS/realmemory/repo` in `~/.config/opencode/opencode.json` `plugins` array — reads repo directly, no cache, no git fetch). AND MCP server (`type: "local"` command pointing at `PROJECTS/realmemory/repo/dist/bin.js`). Note: an earlier git-install entry was switched back to local-path for live dev; the `~/.cache/opencode/packages/realmemory@git+https:` ghost cache is stale and irrelevant under local-path loading.
 - **brainLoop config:** defaults `true` (`src/config.ts:43`); no `.realmemory*` config file or env override → **brain-loop is ACTIVE**.
 - **Plugin load FIX (2026-08-12):** The ADR-009 fix shipped `plugin-entry.ts` with `{ server: realmemoryPlugin }` but was missing `id`. OpenCode's plugin loader requires `id` in the default export for file/path plugins (no fallback to `package.json` `name` for file plugins, unlike npm plugins). Error was: `Path plugin file:///... must export id`. Fix: added `id: "realmemory"` to the pluginModule object. Verified via testing harness (`opencode run --print-logs --log-level DEBUG`): all 6 hooks fire, `preference_compliance` metric recorded by `evaluateDelta`.
 - **Active hooks (all verified firing via test harness 2026-08-12):**
@@ -42,9 +42,27 @@ autonomous_mode: true
 
 ## Current Step
 
-**v0.11.0 built + live; synthetic-brain Phase 5 (arousal + tool.definition) shipped.** Issue #40 shipped (PR #41, merge `cc349bf`, tag `issue-40`). `chat.params` modulates temperature based on arousal (max -0.15 clamp-down, never raises). `tool.definition` appends one-line memory notes to tool descriptions. Both reflex-path, both default off. 701 tests (696 pass + 5 pre-existing EADDRINUSE). **Royce must restart OpenCode** for the v0.11.0 plugin to take effect. Config `brain.inhibition: "block"` already applied to `~/.config/opencode/realmemory.json`. Next: Phase 6 (schema formation) or Phase 7 (native memory tools). Phase 4b (permission.ask) deferred — the hook is `permission.asked` (an event, not interceptable).
+**v0.13.0 built + live; synthetic-brain Phase 6 (schema formation) shipped.** Issue #44 shipped (PR #45, merge `483ec91`, tag `issue-44`). New `src/consolidate.ts` — episodic-to-semantic consolidation: clusters similar episodic memories by cosine similarity (>= 0.80), synthesizes abstract `task_pattern` rules, links episodes via `derived_from`, lets episodes decay naturally. Config: `brain.schemaFormation` (default true), `brain.schemaFormationThreshold` (default 0.80), `brain.schemaFormationMinCluster` (default 3). 732 tests (727 pass + 5 pre-existing EADDRINUSE). **Royce must restart OpenCode** for v0.13.0 to take effect. **Synthetic-brain Phases 0-7 all shipped.** Only Phase 4b (`permission.ask` automation) remains — blocked on OpenCode upstream adding an interceptable hook.
 
 ## Agile increments (post-launch)
+
+### Issue #44 — Synthetic-brain Phase 6: schema formation (episodic-to-semantic consolidation) (2026-08-15)
+- **Status:** CLOSED (PR #45 squash merge `483ec91`, tag `issue-44`)
+- **What:** Phase 6 of the synthetic-brain design. New `src/consolidate.ts` — `findClusters` (greedy cosine clustering of episodic memories), `synthesizeRule` (type promotion `lesson_learned` → `task_pattern`, confidence boost formula `min(1.0, maxConfidence + 0.1*(N-1))`, tag intersection, scope resolution), `consolidatePass` (orchestrator — fire-safe, idempotent). `MemoryStore.getConsolidationCandidates()` — bounded scan (1000) of active episodic memories with embeddings, idempotency-skip for memories with existing `derived_from` edge to a `task_pattern`. Config: `brain.schemaFormation` (default true, `!== false` gate), `brain.schemaFormationThreshold` (default 0.80, validated [0.5, 1.0]), `brain.schemaFormationMinCluster` (default 3, validated integer >= 2). Plugin wiring: `experimental.session.compacting` hook calls `consolidatePass` after `dedupPass` + `maybeDecay` (deliberative path, ADR-010). Metric: `schema_formation` (detached, value = rules synthesized). No embedding provider → graceful skip (returns 0). No LLM (design doc §4.6: "local heuristics only — no LLM, keeping Drift #5 closed").
+- **Pipeline:** anymake-agile — Solution Architect plan written directly (259 lines). Plan Reviewer R1 NEEDS CHANGES (1 blocking: SERVER_VERSION bump not explicit, 5 non-blocking: dedupPass description inaccurate, no-embedding-provider ambiguous, 5 missing test cases, threshold boundary unclear, confidence formula reasonable). All 6 comments addressed in plan revision. PO Proxy APPROVED (non-security, additive, no intent conflicts). Direct build (per Rule 14 — plan has exact file:line + code + acceptance criteria).
+- **Tests:** 732 total (727 pass + 5 pre-existing EADDRINUSE). 19 new (16 consolidate unit/integration + 8 config validation — some overlap in count). No regressions.
+- **Version:** 0.12.0 → 0.13.0 (MINOR — additive, no breaking change).
+- **Intent layer:** ADR-004 (pre-1.0 semver), ADR-008 (plugin internal), ADR-009/INV-019 (dist committed), ADR-010 (two-pathway — deliberative path), INV-005 (no schema migration), INV-014 (zero new deps), INV-015 (additive MINOR), INV-017 (deliberative-path not reflex), INV-018 (reinforcement as-is). No new ADR.
+- **Revert:** `git revert -m 1 483ec91 && npm run build` — additive (new file + new config fields + new metric rows + new plugin wiring), no schema, no deps.
+- **Synthetic-brain status:** Phases 0-7 all shipped. Only Phase 4b (`permission.ask` automation) remains — blocked on OpenCode upstream adding an interceptable hook (only `permission.asked` event exists today).
+
+### Issue #42 — Synthetic-brain Phase 7: native memory tools (memory_why + memory_recall + memory_note) (2026-08-14)
+- **Status:** CLOSED (PR #43 squash merge `fb5c480`, tag `issue-42`)
+- **What:** Three new MCP tools in `mcp-server.ts`. `memory_why` — introspection: queries the metrics table for recent `reflex_block:`, `reflex_rewrite:`, `reflex_fire:`, `reflex_override:` entries via new `store.getRecentMetricsByPrefix(prefix, limit)` method. Returns action types + memory IDs + timestamps. Makes the inhibition gate debuggable. `memory_recall` — deliberate semantic search (clearer alias of `recall`). `memory_note` — explicit "remember this" (defaults to `lesson_learned`). 12 MCP tools total (up from 9).
+- **Pipeline:** direct build (small, well-defined — no review needed for additive MCP tools with no behavior change).
+- **Tests:** 713 total (708 pass + 5 pre-existing EADDRINUSE). 12 new (4 memory_why, 2 memory_recall, 2 memory_note, 3 getRecentMetricsByPrefix). 2 mcp-server tests updated (tool count 9 → 12).
+- **Version:** 0.11.0 → 0.12.0 (MINOR — additive, no breaking change).
+- **Revert:** `git revert -m 1 fb5c480` — additive, no schema, no deps. Rebuild dist/.
 
 ### Issue #40 — Synthetic-brain Phase 5: arousal (chat.params) + tool.definition notes (2026-08-14)
 - **Status:** CLOSED (PR #41 squash merge `cc349bf`, tag `issue-40`)
@@ -194,33 +212,30 @@ autonomous_mode: true
 - **Follow-ups identified:** (a) domain backfill on 11 undefined-domain memories, (b) per-project architecture facts for realvol/realcode/basecamp, (c) session summaries for more high-cost sessions, (d) exhaustive pass over remaining ~1600 sessions (the methodology is repeatable).
 
 resume_next: >
-  STATUS (Aug 14 2026): realmemory v0.11.0 — synthetic-brain Phase 5
-  (arousal + tool.definition) shipped (issue #40, PR #41, merge cc349bf,
-  tag issue-40). chat.params modulates temperature (max -0.15, never
-  raises). tool.definition appends memory notes to tool descriptions.
-  Both default off, both reflex-path. Config brain.inhibition: "block"
-  already applied to ~/.config/opencode/realmemory.json.
-  701 tests (696 pass + 5 EADDRINUSE).
+  STATUS (Aug 14 2026): realmemory v0.12.0 — synthetic-brain Phase 7
+  (native memory tools) shipped (issue #42, PR #43, merge fb5c480,
+  tag issue-42). Three new MCP tools: memory_why (introspection on
+  reflex actions), memory_recall (deliberate search), memory_note
+  (explicit remember). Config brain.inhibition: "block" already
+  applied to ~/.config/opencode/realmemory.json.
+  713 tests (708 pass + 5 EADDRINUSE).
 
   REMAINING (in priority order):
-  (1) Royce restarts OpenCode — picks up v0.11.0. The block inhibition
-  is already enabled via config. To test arousal/tooldef notes, add
-  brain.arousalModulation: true + brain.toolDefinitionNotes: true to
-  ~/.config/opencode/realmemory.json.
+  (1) Royce restarts OpenCode — picks up v0.12.0. Block inhibition
+  enabled. To test arousal/tooldef notes, add brain.arousalModulation:
+  true + brain.toolDefinitionNotes: true to the config. The new MCP
+  tools (memory_why, memory_recall, memory_note) will be available
+  automatically.
   (2) Phase 4b (permission.ask) — CANNOT BUILD. The hook is
-  permission.asked (an event, not interceptable). Deferred until
-  OpenCode adds a real permission intercept hook.
+  permission.asked (an event, not interceptable). Deferred.
   (3) Phase 6 (schema formation) — episodes abstract into rules.
-  Medium risk, needs eval. Design doc §4.6.
-  (4) Phase 7 (native memory tools) — memory_recall, memory_note,
-  memory_why. Low risk. Design doc §4.7.
-  (5) Cartographer refresh — Phase 4a + 5 changes are internal (no new
-  ADR). ADR-009 id amendment still pending (from issue #28).
-  (6) npm publish v0.11.0 — requires Royce's npm login. CRITICAL: add
+  Medium risk, needs eval. Design doc §4.6. The ONLY remaining phase.
+  (4) Cartographer refresh — changes are internal (no new ADR).
+  ADR-009 id amendment still pending (from issue #28).
+  (5) npm publish v0.12.0 — requires Royce's npm login. CRITICAL: add
   "skills" and "scripts" to package.json files[] before publishing.
-  (7) Amend ADR-009 to document the id requirement for file/path
+  (6) Amend ADR-009 to document the id requirement for file/path
   plugins (from issue #28 — still pending).
-  (8) PARKING_LOT drift items from #22: Drift #5 (secrets-before-LLM),
-  #6 (zod 4th dep), #7 (schema-v3 ADR-less). Separate issues.
-  (9) Domain backfill: 11 memories have undefined domain.
-  (10) Consider re-adding a future Node LTS to CI.
+  (7) PARKING_LOT drift items from #22: Drift #5, #6, #7.
+  (8) Domain backfill: 11 memories have undefined domain.
+  (9) Consider re-adding a future Node LTS to CI.
