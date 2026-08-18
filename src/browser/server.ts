@@ -71,6 +71,22 @@ function getUiDir(): string {
   );
 }
 
+/**
+ * Set permissive CORS headers on every response. The browser server is
+ * read-only, GET-only, and bound to 127.0.0.1 (INV-013), so allowing any
+ * origin to READ is safe. This fixes the localhost-vs-127.0.0.1 origin
+ * mismatch: a page visited via http://localhost:9333 that fetches
+ * http://127.0.0.1:9333/api/graph is cross-origin to the browser and would
+ * otherwise be blocked by the CORS preflight (the server returned 405 on
+ * OPTIONS, silently forcing the UI into demo/mock-data fallback).
+ */
+function setCorsHeaders(res: ServerResponse): void {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Accept");
+  res.setHeader("Access-Control-Max-Age", "86400");
+}
+
 const MIME_TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
   ".js": "application/javascript; charset=utf-8",
@@ -166,6 +182,18 @@ async function handleRequest(
   store: MemoryStore,
   uiDir: string,
 ): Promise<void> {
+  // CORS headers on every response (read-only server — safe to allow any origin).
+  setCorsHeaders(res);
+
+  // Handle CORS preflight before the GET-only guard: the browser sends OPTIONS
+  // before a cross-origin GET, and would otherwise receive 405 and block the
+  // actual request (the localhost/127.0.0.1 mismatch that forced demo fallback).
+  if (req.method === "OPTIONS") {
+    res.writeHead(204, { "Content-Length": 0 });
+    res.end();
+    return;
+  }
+
   // Only GET is allowed — read-only server.
   if (req.method !== "GET") {
     sendJson(res, 405, { error: "Method Not Allowed" });

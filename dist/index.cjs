@@ -2052,6 +2052,12 @@ function getUiDir() {
     "realmemory: built UI not found. Run `npm run build:ui` (or `npm run build`) to build the React UI into src/browser/static/ui/."
   );
 }
+function setCorsHeaders(res) {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Accept");
+  res.setHeader("Access-Control-Max-Age", "86400");
+}
 var MIME_TYPES = {
   ".html": "text/html; charset=utf-8",
   ".js": "application/javascript; charset=utf-8",
@@ -2108,6 +2114,12 @@ function startBrowserServer(store, opts) {
   return server;
 }
 async function handleRequest(req, res, store, uiDir) {
+  setCorsHeaders(res);
+  if (req.method === "OPTIONS") {
+    res.writeHead(204, { "Content-Length": 0 });
+    res.end();
+    return;
+  }
   if (req.method !== "GET") {
     sendJson(res, 405, { error: "Method Not Allowed" });
     return;

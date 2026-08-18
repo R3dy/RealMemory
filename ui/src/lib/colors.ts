@@ -1,4 +1,12 @@
 import type { EdgeType, MemoryType } from './data';
+import type { Memory } from './data';
+import { BRAIN_REGIONS, UNASSIGNED_REGION_INDEX, regionIndexFor } from './domain-regions';
+
+/** Color for a memory's domain region (when colorMode === 'domain'). */
+export function domainColor(memory: Memory, regionMap: Map<string, number>): string {
+  const ri = regionIndexFor(memory, regionMap);
+  return BRAIN_REGIONS[ri].color;
+}
 
 /** Semantic color maps — design.md §2. MANDATORY RealMemory meaning, neon-tuned for dark UI. */
 
