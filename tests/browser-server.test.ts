@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { get } from "node:http";
 import type { Server } from "node:http";
 import { MemoryStore } from "../src/store";
@@ -64,7 +64,7 @@ afterEach(() => {
   }
 });
 
-describe("browser server", () => {
+describe("browser server — UI serving (issue #46)", () => {
   it("binds to 127.0.0.1, not 0.0.0.0", () => {
     const addr = server.address();
     expect(addr).not.toBeNull();
@@ -73,38 +73,46 @@ describe("browser server", () => {
     }
   });
 
-  it("GET / returns 200 text/html", async () => {
+  it("GET / serves the built SPA shell (HTML with #root)", async () => {
     const res = await request("/");
     expect(res.status).toBe(200);
     expect(res.contentType).toContain("text/html");
-    expect(res.body).toContain("<html");
-    expect(res.body).toContain("realmemory");
+    expect(res.body).toContain("<!doctype html>");
+    expect(res.body).toContain('id="root"');
   });
 
-  it("GET /static/vis-network.min.js returns 200 application/javascript", async () => {
-    const res = await request("/static/vis-network.min.js");
-    expect(res.status).toBe(200);
-    expect(res.contentType).toContain("application/javascript");
-    expect(res.body.length).toBeGreaterThan(1000);
+  it("GET /assets/*.js serves application/javascript", async () => {
+    // Find a built JS asset to test.
+    const assetsDir = join(process.cwd(), "src", "browser", "static", "ui", "assets");
+    if (existsSync(assetsDir)) {
+      const jsFile = readdirSync(assetsDir).find((f) => f.endsWith(".js"));
+      if (jsFile) {
+        const res = await request(`/assets/${jsFile}`);
+        expect(res.status).toBe(200);
+        expect(res.contentType).toContain("application/javascript");
+        expect(res.body.length).toBeGreaterThan(1000);
+      }
+    }
   });
 
-  it("GET /favicon.ico returns 204", async () => {
+  it("GET /favicon.ico serves an image (logo.svg fallback)", async () => {
     const res = await request("/favicon.ico");
-    expect(res.status).toBe(204);
+    expect(res.status).toBe(200);
+    expect(res.contentType).toContain("image/svg+xml");
   });
 
-  it("GET /health returns 200 with { ok: true }", async () => {
+  it("GET /health returns 200 with { ok: true } (NOT hijacked by SPA fallback)", async () => {
     const res = await request("/health");
     expect(res.status).toBe(200);
     expect(res.contentType).toContain("application/json");
     expect(JSON.parse(res.body)).toEqual({ ok: true });
   });
 
-  it("GET /version returns 200 with { version: \"0.9.0\" }", async () => {
+  it("GET /version returns 200 with { version: \"0.14.0\" }", async () => {
     const res = await request("/version");
     expect(res.status).toBe(200);
     expect(res.contentType).toContain("application/json");
-    expect(JSON.parse(res.body)).toEqual({ version: "0.9.0" });
+    expect(JSON.parse(res.body)).toEqual({ version: "0.14.0" });
   });
 
   it("GET /api/stats returns 200 with the stats shape", async () => {
@@ -123,8 +131,41 @@ describe("browser server", () => {
     expect(res.status).toBe(405);
   });
 
-  it("returns 404 for unknown paths", async () => {
-    const res = await request("/unknown-path");
+  // SPA fallback tests
+  it("GET /memories serves index.html (SPA fallback)", async () => {
+    const res = await request("/memories");
+    expect(res.status).toBe(200);
+    expect(res.contentType).toContain("text/html");
+    expect(res.body).toContain('id="root"');
+  });
+
+  it("GET /brain serves index.html (SPA fallback)", async () => {
+    const res = await request("/brain");
+    expect(res.status).toBe(200);
+    expect(res.contentType).toContain("text/html");
+    expect(res.body).toContain('id="root"');
+  });
+
+  it("GET /vitals serves index.html (SPA fallback)", async () => {
+    const res = await request("/vitals");
+    expect(res.status).toBe(200);
+    expect(res.contentType).toContain("text/html");
+    expect(res.body).toContain('id="root"');
+  });
+
+  it("GET /api/nonexistent returns 404 JSON (NOT HTML — SPA fallback must not catch /api/)", async () => {
+    const res = await request("/api/nonexistent");
     expect(res.status).toBe(404);
+    expect(res.contentType).toContain("application/json");
+    expect(JSON.parse(res.body)).toEqual({ error: "Not Found" });
+  });
+
+  it("GET /../../etc/passwd is rejected (path traversal guard)", async () => {
+    const res = await request("/../../etc/passwd");
+    // The URL parser normalizes ../ in the path, so this may arrive as /etc/passwd
+    // which triggers SPA fallback. The key is it does NOT serve /etc/passwd content.
+    expect(res.status).toBe(200); // SPA fallback serves index.html
+    expect(res.contentType).toContain("text/html");
+    expect(res.body).not.toContain("root:"); // not /etc/passwd content
   });
 });

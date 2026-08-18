@@ -1,14 +1,13 @@
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from "node:http";
 import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
-import { readFileSync } from "node:fs";
+import { dirname, join, normalize, extname } from "node:path";
+import { readFileSync, existsSync } from "node:fs";
 import type { MemoryStore } from "../store";
 import type { Memory, Relationship, MemoryType } from "../types";
-import { INDEX_HTML } from "./assets";
 
 /**
  * A directed edge in the graph payload, with `source`/`target` naming that
- * matches what vis-network's `DataSet` edges consume.
+ * matches what the graph visualization consumes.
  */
 export interface GraphEdge {
   id: string;
@@ -48,30 +47,52 @@ const MEMORY_TYPES: ReadonlySet<MemoryType> = new Set<MemoryType>([
 ]);
 
 /**
- * Resolve the vendored vis-network bundle. Works in both `src/` (dev, run via
+ * Resolve the built UI directory. Works in both `src/` (dev, run via
  * tsx) and `dist/` (built) layouts by looking relative to this module's
- * location. Vendored — never an npm `dependency`.
+ * location. The UI is a React/Three.js app built by vite (see `ui/`),
+ * vendored as browser-side static assets under `src/browser/static/ui/`
+ * (per ADR-006 #4 — same vendored-asset pattern as the former vis-network).
  */
-function loadVisNetworkJs(): string {
+function getUiDir(): string {
   const here = dirname(fileURLToPath(import.meta.url));
   const candidates = [
-    // Built package: dist/browser/static/ (server bundled into dist/bin.js).
-    join(here, "browser", "static", "vis-network.min.js"),
-    // Dev: src/browser/server.ts -> src/browser/static/.
-    join(here, "static", "vis-network.min.js"),
+    // Built package: dist/browser/static/ui/ (server bundled into dist/bin.js).
+    join(here, "browser", "static", "ui"),
+    // Dev: src/browser/server.ts -> src/browser/static/ui/.
+    join(here, "static", "ui"),
     // Dev fallback: relative to cwd.
-    join(process.cwd(), "src", "browser", "static", "vis-network.min.js"),
+    join(process.cwd(), "src", "browser", "static", "ui"),
   ];
   for (const p of candidates) {
-    try {
-      return readFileSync(p, "utf-8");
-    } catch {
-      // try next candidate
-    }
+    if (existsSync(join(p, "index.html"))) return p;
   }
   throw new Error(
-    "realmemory: vendored vis-network.min.js not found. Run `npm run build` or ensure src/browser/static/vis-network.min.js exists.",
+    "realmemory: built UI not found. Run `npm run build:ui` (or `npm run build`) to build the React UI into src/browser/static/ui/.",
   );
+}
+
+const MIME_TYPES: Record<string, string> = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "application/javascript; charset=utf-8",
+  ".mjs": "application/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".ico": "image/x-icon",
+  ".json": "application/json; charset=utf-8",
+  ".woff": "font/woff",
+  ".woff2": "font/woff2",
+  ".ttf": "font/ttf",
+  ".otf": "font/otf",
+  ".wasm": "application/wasm",
+  ".map": "application/json; charset=utf-8",
+};
+
+function mimeFor(filename: string): string {
+  return MIME_TYPES[extname(filename).toLowerCase()] ?? "application/octet-stream";
 }
 
 /**
@@ -92,11 +113,11 @@ export function startBrowserServer(
   store: MemoryStore,
   opts: BrowserServerOptions,
 ): Server {
-  const visNetworkJs = loadVisNetworkJs();
+  const uiDir = getUiDir();
   const ownLifecycle = opts.ownLifecycle ?? true;
 
   const server = createServer((req, res) => {
-    handleRequest(req, res, store, visNetworkJs).catch((err) => {
+    handleRequest(req, res, store, uiDir).catch((err) => {
       const message = err instanceof Error ? err.message : String(err);
       sendJson(res, 500, { error: message });
     });
@@ -143,7 +164,7 @@ async function handleRequest(
   req: IncomingMessage,
   res: ServerResponse,
   store: MemoryStore,
-  visNetworkJs: string,
+  uiDir: string,
 ): Promise<void> {
   // Only GET is allowed — read-only server.
   if (req.method !== "GET") {
@@ -154,25 +175,7 @@ async function handleRequest(
   const url = new URL(req.url ?? "/", "http://127.0.0.1");
   const pathname = url.pathname;
 
-  if (pathname === "/") {
-    sendHtml(res, 200, INDEX_HTML);
-    return;
-  }
-
-  if (pathname === "/static/vis-network.min.js") {
-    res.writeHead(200, {
-      "Content-Type": "application/javascript; charset=utf-8",
-      "Cache-Control": "public, max-age=86400",
-    });
-    res.end(visNetworkJs);
-    return;
-  }
-
-  if (pathname === "/favicon.ico") {
-    res.writeHead(204);
-    res.end();
-    return;
-  }
+  // --- API routes (must be checked BEFORE SPA fallback) ---
 
   if (pathname === "/health") {
     sendJson(res, 200, { ok: true });
@@ -180,7 +183,7 @@ async function handleRequest(
   }
 
   if (pathname === "/version") {
-    sendJson(res, 200, { version: "0.9.0" });
+    sendJson(res, 200, { version: "0.14.0" });
     return;
   }
 
@@ -214,7 +217,52 @@ async function handleRequest(
     return;
   }
 
-  sendJson(res, 404, { error: "Not Found" });
+  // Unknown /api/ paths return JSON 404 (never HTML — SPA fallback must not catch these).
+  if (pathname.startsWith("/api/")) {
+    sendJson(res, 404, { error: "Not Found" });
+    return;
+  }
+
+  // --- Static UI assets ---
+
+  // Path traversal guard — reject any path containing ".." after normalization.
+  const normalizedPath = normalize(pathname);
+  if (normalizedPath.includes("..")) {
+    sendJson(res, 403, { error: "Forbidden" });
+    return;
+  }
+
+  // Serve specific known static files from the UI root.
+  const uiRootFiles = [
+    "/logo.svg", "/boot-reactor.svg", "/grid-hex.svg", "/nebula-bg.png",
+    "/favicon.ico",
+  ];
+  if (uiRootFiles.includes(normalizedPath)) {
+    const filePath = join(uiDir, normalizedPath === "/favicon.ico" ? "logo.svg" : normalizedPath.slice(1));
+    if (existsSync(filePath)) {
+      serveStaticFile(res, filePath);
+      return;
+    }
+  }
+
+  // Serve /assets/* from the UI assets directory.
+  if (normalizedPath.startsWith("/assets/")) {
+    const filePath = join(uiDir, normalizedPath.slice(1));
+    if (existsSync(filePath)) {
+      serveStaticFile(res, filePath);
+      return;
+    }
+  }
+
+  // Root → serve index.html (the SPA shell).
+  if (normalizedPath === "/") {
+    serveStaticFile(res, join(uiDir, "index.html"));
+    return;
+  }
+
+  // SPA fallback: any other non-API path serves index.html (client-side routes:
+  // /memories, /domains, /brain, /vitals, etc.).
+  serveStaticFile(res, join(uiDir, "index.html"));
 }
 
 async function handleGraph(
@@ -419,10 +467,16 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.end(json);
 }
 
-function sendHtml(res: ServerResponse, status: number, html: string): void {
-  res.writeHead(status, {
-    "Content-Type": "text/html; charset=utf-8",
-    "Content-Length": Buffer.byteLength(html),
-  });
-  res.end(html);
+function serveStaticFile(res: ServerResponse, filePath: string): void {
+  try {
+    const content = readFileSync(filePath);
+    res.writeHead(200, {
+      "Content-Type": mimeFor(filePath),
+      "Cache-Control": "public, max-age=86400",
+      "Content-Length": content.length,
+    });
+    res.end(content);
+  } catch {
+    sendJson(res, 404, { error: "File not found" });
+  }
 }

@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <defs>
+    <!-- Flat-top hexagon tile: side length 32, width 64, height ~55.43 -->
+    <g id="hex" fill="none" stroke="rgba(0,212,255,0.18)" stroke-width="1">
+      <path d="M16 4.57 L48 4.57 L64 32 L48 59.43 L16 59.43 L0 32 Z"/>
+    </g>
+    <pattern id="hexgrid" width="96" height="166.28" patternUnits="userSpaceOnUse">
+      <use href="#hex" x="0" y="0"/>
+      <use href="#hex" x="48" y="83.14"/>
+      <use href="#hex" x="0" y="166.28"/>
+      <circle cx="16" cy="4.57" r="1" fill="rgba(0,212,255,0.55)"/>
+      <circle cx="64" cy="115.14" r="1" fill="rgba(0,212,255,0.55)"/>
+      <circle cx="16" cy="170.85" r="1" fill="rgba(0,212,255,0.55)"/>
+    </pattern>
+  </defs>
+  <rect width="512" height="512" fill="url(#hexgrid)"/>
+</svg>

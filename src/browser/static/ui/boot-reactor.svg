@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" fill="none">
+  <!-- Detailed arc-reactor dial. Separate groups per ring so code can rotate/animate each. -->
+  <g stroke="#00d4ff" stroke-linecap="round" fill="none">
+    <!-- OUTER RING: tick marks (rotatable group) -->
+    <g id="ring-outer" opacity="0.85">
+      <circle cx="256" cy="256" r="238" stroke-width="2" opacity="0.5"/>
+      <g stroke-width="3">
+        <path d="M256 10 L256 34"/>
+        <path d="M256 10 L256 28" transform="rotate(15 256 256)"/>
+        <path d="M256 10 L256 34" transform="rotate(30 256 256)"/>
+        <path d="M256 10 L256 28" transform="rotate(45 256 256)"/>
+        <path d="M256 10 L256 34" transform="rotate(60 256 256)"/>
+        <path d="M256 10 L256 28" transform="rotate(75 256 256)"/>
+        <path d="M256 10 L256 34" transform="rotate(90 256 256)"/>
+        <path d="M256 10 L256 28" transform="rotate(105 256 256)"/>
+        <path d="M256 10 L256 34" transform="rotate(120 256 256)"/>
+        <path d="M256 10 L256 28" transform="rotate(135 256 256)"/>
+        <path d="M256 10 L256 34" transform="rotate(150 256 256)"/>
+        <path d="M256 10 L256 28" transform="rotate(165 256 256)"/>
+        <path d="M256 10 L256 34" transform="rotate(180 256 256)"/>
+        <path d="M256 10 L256 28" transform="rotate(195 256 256)"/>
+        <path d="M256 10 L256 34" transform="rotate(210 256 256)"/>
+        <path d="M256 10 L256 28" transform="rotate(225 256 256)"/>
+        <path d="M256 10 L256 34" transform="rotate(240 256 256)"/>
+        <path d="M256 10 L256 28" transform="rotate(255 256 256)"/>
+        <path d="M256 10 L256 34" transform="rotate(270 256 256)"/>
+        <path d="M256 10 L256 28" transform="rotate(285 256 256)"/>
+        <path d="M256 10 L256 34" transform="rotate(300 256 256)"/>
+        <path d="M256 10 L256 28" transform="rotate(315 256 256)"/>
+        <path d="M256 10 L256 34" transform="rotate(330 256 256)"/>
+        <path d="M256 10 L256 28" transform="rotate(345 256 256)"/>
+      </g>
+    </g>
+    <!-- PROGRESS ARC: segmented sweep ring (dashoffset animated by code) -->
+    <g id="ring-progress">
+      <circle id="progress-track" cx="256" cy="256" r="208" stroke-width="10" opacity="0.15"/>
+      <circle id="progress-arc" cx="256" cy="256" r="208" stroke-width="10"
+              stroke-dasharray="1306.9" stroke-dashoffset="1306.9"
+              transform="rotate(-90 256 256)"/>
+      <!-- segment separators -->
+      <circle cx="256" cy="256" r="208" stroke-width="12" opacity="0.9" stroke="#02060e"
+              stroke-dasharray="2 52" transform="rotate(-88 256 256)"/>
+    </g>
+    <!-- MID RING: dashed counter-rotating -->
+    <g id="ring-mid" opacity="0.7">
+      <circle cx="256" cy="256" r="178" stroke-width="2" stroke-dasharray="26 14"/>
+      <circle cx="256" cy="256" r="166" stroke-width="1.5" stroke-dasharray="4 8" opacity="0.6"/>
+    </g>
+    <!-- INNER RING: triangular reactor segments -->
+    <g id="ring-inner" stroke-width="5" opacity="0.95">
+      <path d="M256 108 L276 148 L236 148 Z" stroke-linejoin="round"/>
+      <path d="M256 108 L276 148 L236 148 Z" stroke-linejoin="round" transform="rotate(36 256 256)"/>
+      <path d="M256 108 L276 148 L236 148 Z" stroke-linejoin="round" transform="rotate(72 256 256)"/>
+      <path d="M256 108 L276 148 L236 148 Z" stroke-linejoin="round" transform="rotate(108 256 256)"/>
+      <path d="M256 108 L276 148 L236 148 Z" stroke-linejoin="round" transform="rotate(144 256 256)"/>
+      <path d="M256 108 L276 148 L236 148 Z" stroke-linejoin="round" transform="rotate(180 256 256)"/>
+      <path d="M256 108 L276 148 L236 148 Z" stroke-linejoin="round" transform="rotate(216 256 256)"/>
+      <path d="M256 108 L276 148 L236 148 Z" stroke-linejoin="round" transform="rotate(252 256 256)"/>
+      <path d="M256 108 L276 148 L236 148 Z" stroke-linejoin="round" transform="rotate(288 256 256)"/>
+      <path d="M256 108 L276 148 L236 148 Z" stroke-linejoin="round" transform="rotate(324 256 256)"/>
+    </g>
+    <!-- CORE: triangle-of-triangles -->
+    <g id="core" stroke-width="4" stroke-linejoin="round">
+      <circle cx="256" cy="256" r="96" stroke-width="2" opacity="0.6"/>
+      <path d="M256 176 L326 296 L186 296 Z"/>
+      <path d="M256 216 L296 286 L216 286 Z" opacity="0.85"/>
+      <path d="M256 248 L274 282 L238 282 Z" opacity="0.7"/>
+      <circle id="core-dot" cx="256" cy="268" r="8" fill="#00d4ff" stroke="none"/>
+    </g>
+  </g>
+</svg>

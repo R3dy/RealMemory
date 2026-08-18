@@ -1,0 +1,272 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* RealMemory neural-interface design tokens (design.md §2) */
+    --void: #02060e;
+    --space: #050b18;
+    --panel-glass: rgba(8, 20, 38, 0.55);
+    --panel-glass-solid: rgba(8, 20, 38, 0.72);
+    --panel-glass-ghost: rgba(8, 20, 38, 0.45);
+    --panel-border: rgba(0, 212, 255, 0.22);
+    --panel-border-hot: rgba(0, 212, 255, 0.6);
+    --arc: #00d4ff;
+    --arc-soft: #7de9ff;
+    --arc-dim: #0e5d75;
+    --reactor: #ffb627;
+    --danger: #ff3355;
+    --ok: #22ff88;
+    --text-hi: #e8f6ff;
+    --text-mid: #8fa9c7;
+    --text-dim: #4b5f7c;
+    --grid-line: rgba(0, 212, 255, 0.05);
+    --glow-arc: 0 0 16px rgba(0, 212, 255, 0.45), 0 0 48px rgba(0, 212, 255, 0.15);
+
+    /* shadcn/ui compatibility (dark-only app) */
+    --background: 216 71% 3%;
+    --foreground: 203 100% 95%;
+    --card: 215 56% 6%;
+    --card-foreground: 203 100% 95%;
+    --popover: 215 56% 6%;
+    --popover-foreground: 203 100% 95%;
+    --primary: 192 100% 50%;
+    --primary-foreground: 216 71% 3%;
+    --secondary: 213 40% 14%;
+    --secondary-foreground: 203 100% 95%;
+    --muted: 213 40% 14%;
+    --muted-foreground: 211 28% 67%;
+    --accent: 213 40% 14%;
+    --accent-foreground: 203 100% 95%;
+    --destructive: 348 100% 60%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 192 100% 50% / 0.22;
+    --input: 192 100% 50% / 0.22;
+    --ring: 192 100% 50%;
+    --radius: 0.5rem;
+    --sidebar-background: 215 56% 6%;
+    --sidebar-foreground: 203 100% 95%;
+    --sidebar-primary: 192 100% 50%;
+    --sidebar-primary-foreground: 216 71% 3%;
+    --sidebar-accent: 213 40% 14%;
+    --sidebar-accent-foreground: 203 100% 95%;
+    --sidebar-border: 192 100% 50% / 0.22;
+    --sidebar-ring: 192 100% 50%;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    background-color: var(--void);
+    color: var(--text-hi);
+    font-family: 'Rajdhani', system-ui, sans-serif;
+    letter-spacing: 0.02em;
+    overflow-x: hidden;
+  }
+
+  ::selection {
+    background: rgba(0, 212, 255, 0.3);
+    color: var(--text-hi);
+  }
+
+  /* Custom HUD scrollbars (design.md §4) */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgba(0, 212, 255, 0.25);
+    border-radius: 3px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(0, 212, 255, 0.45);
+    box-shadow: 0 0 8px rgba(0, 212, 255, 0.4);
+  }
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(0, 212, 255, 0.25) transparent;
+  }
+}
+
+@layer components {
+  /* ---- Holo panel anatomy (design.md §4 / §7.4) ---- */
+  .holo-panel {
+    position: relative;
+    background: var(--panel-glass);
+    border: 1px solid var(--panel-border);
+    border-radius: 8px;
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+  }
+  .holo-panel::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: 8px;
+    pointer-events: none;
+    background: linear-gradient(180deg, rgba(125, 233, 255, 0.08), transparent 40%);
+  }
+  .holo-panel-solid {
+    background: var(--panel-glass-solid);
+  }
+  .holo-panel-ghost {
+    background: var(--panel-glass-ghost);
+  }
+  /* corner brackets */
+  .holo-corners::after {
+    content: '';
+    position: absolute;
+    inset: -1px;
+    border-radius: 8px;
+    pointer-events: none;
+    background:
+      linear-gradient(var(--arc), var(--arc)) top left / 14px 1px,
+      linear-gradient(var(--arc), var(--arc)) top left / 1px 14px,
+      linear-gradient(var(--arc), var(--arc)) top right / 14px 1px,
+      linear-gradient(var(--arc), var(--arc)) top right / 1px 14px,
+      linear-gradient(var(--arc), var(--arc)) bottom left / 14px 1px,
+      linear-gradient(var(--arc), var(--arc)) bottom left / 1px 14px,
+      linear-gradient(var(--arc), var(--arc)) bottom right / 14px 1px,
+      linear-gradient(var(--arc), var(--arc)) bottom right / 1px 14px;
+    background-repeat: no-repeat;
+    opacity: 0.6;
+  }
+
+  /* gradient divider line */
+  .holo-divider {
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--arc-dim), transparent);
+  }
+
+  /* text glow for key numerals */
+  .text-glow {
+    text-shadow: 0 0 12px rgba(0, 212, 255, 0.6);
+  }
+  .micro-label {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+  }
+
+  /* ---- scanline overlay + vignette (design.md §4) ---- */
+  .scanlines {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 20;
+    background: repeating-linear-gradient(
+      0deg,
+      rgba(255, 255, 255, 0.015) 0 1px,
+      transparent 1px 3px
+    );
+  }
+  .scanlines::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: -120px;
+    height: 120px;
+    background: linear-gradient(180deg, transparent, rgba(0, 212, 255, 0.04), transparent);
+    animation: scan-sweep 9s linear infinite;
+  }
+  .vignette {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 15;
+    background: radial-gradient(ellipse at center, transparent 45%, rgba(2, 6, 14, 0.55) 100%);
+  }
+
+  /* page backdrop for non-home pages */
+  .nebula-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    background:
+      linear-gradient(rgba(2, 6, 14, 0.6), rgba(2, 6, 14, 0.6)),
+      url('/nebula-bg.png') center / cover no-repeat,
+      var(--void);
+  }
+}
+
+@layer utilities {
+  .font-display {
+    font-family: 'Orbitron', sans-serif;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+  }
+  .font-mono2 {
+    font-family: 'JetBrains Mono', monospace;
+    letter-spacing: 0;
+  }
+
+  @keyframes scan-sweep {
+    0% {
+      transform: translateY(0);
+    }
+    100% {
+      transform: translateY(calc(100vh + 240px));
+    }
+  }
+  @keyframes led-blink {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.35;
+    }
+  }
+  @keyframes spin-slow {
+    from {
+      transform: rotate(0deg);
+    }
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  @keyframes holo-reveal {
+    from {
+      clip-path: inset(0 100% 0 0);
+      opacity: 0;
+    }
+    to {
+      clip-path: inset(0);
+      opacity: 1;
+    }
+  }
+  @keyframes dash-flow {
+    to {
+      stroke-dashoffset: -24;
+    }
+  }
+  .animate-led {
+    animation: led-blink 1.6s ease-in-out infinite;
+  }
+  .animate-spin-slow {
+    animation: spin-slow 24s linear infinite;
+  }
+  .animate-holo-reveal {
+    animation: holo-reveal 450ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .scanlines::after,
+  .animate-led,
+  .animate-spin-slow {
+    animation: none !important;
+  }
+}

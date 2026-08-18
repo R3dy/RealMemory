@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" fill="none">
+  <!-- Arc-reactor / brain hybrid mark: 10 triangular reactor segments around a synapse-knot brain -->
+  <g stroke="#00d4ff" stroke-width="3" stroke-linejoin="round" stroke-linecap="round">
+    <!-- outer triangular reactor segments -->
+    <g opacity="0.9">
+      <path d="M128 14 L144 40 L112 40 Z"/>
+      <path d="M128 14 L144 40 L112 40 Z" transform="rotate(36 128 128)"/>
+      <path d="M128 14 L144 40 L112 40 Z" transform="rotate(72 128 128)"/>
+      <path d="M128 14 L144 40 L112 40 Z" transform="rotate(108 128 128)"/>
+      <path d="M128 14 L144 40 L112 40 Z" transform="rotate(144 128 128)"/>
+      <path d="M128 14 L144 40 L112 40 Z" transform="rotate(180 128 128)"/>
+      <path d="M128 14 L144 40 L112 40 Z" transform="rotate(216 128 128)"/>
+      <path d="M128 14 L144 40 L112 40 Z" transform="rotate(252 128 128)"/>
+      <path d="M128 14 L144 40 L112 40 Z" transform="rotate(288 128 128)"/>
+      <path d="M128 14 L144 40 L112 40 Z" transform="rotate(324 128 128)"/>
+    </g>
+    <!-- mid ring -->
+    <circle cx="128" cy="128" r="86" opacity="0.5" stroke-width="2"/>
+    <circle cx="128" cy="128" r="78" opacity="0.3" stroke-width="1.5" stroke-dasharray="6 10"/>
+    <!-- brain-hemisphere synapse knot -->
+    <g stroke-width="2.5" opacity="0.95">
+      <path d="M128 66 C 100 66 84 88 86 108 C 70 116 68 140 82 152 C 78 172 96 190 118 186 C 124 192 134 192 140 186 C 162 190 180 172 176 152 C 190 140 188 116 172 108 C 174 88 156 66 128 66 Z"/>
+      <path d="M128 66 L128 186" opacity="0.6"/>
+      <path d="M128 92 C 112 96 104 108 106 122"/>
+      <path d="M128 92 C 144 96 152 108 150 122"/>
+      <path d="M128 128 C 110 130 100 142 102 158"/>
+      <path d="M128 128 C 146 130 156 142 154 158"/>
+      <path d="M100 122 L128 128 L156 122" opacity="0.7"/>
+    </g>
+    <!-- glowing synapse node ends -->
+    <g fill="#00d4ff" stroke="none">
+      <circle cx="106" cy="122" r="3.2"/>
+      <circle cx="150" cy="122" r="3.2"/>
+      <circle cx="102" cy="158" r="3.2"/>
+      <circle cx="154" cy="158" r="3.2"/>
+      <circle cx="128" cy="66" r="3.6"/>
+      <circle cx="128" cy="186" r="3.6"/>
+    </g>
+  </g>
+</svg>
