@@ -1,6 +1,6 @@
 {
   "name": "realmemory",
-  "version": "0.13.0",
+  "version": "0.14.0",
   "type": "module",
   "license": "MIT",
   "description": "An OpenCode plugin that gives AI agents real persistent memory — a weighted, indexed database that stores what agents learn across sessions and recalls it automatically.",
@@ -51,7 +51,8 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsup",
+    "build:ui": "cd ui && npm install && npm run build",
+    "build": "npm run build:ui && tsup",
     "prepare": "npm run build",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
