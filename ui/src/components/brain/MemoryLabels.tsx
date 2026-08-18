@@ -1,8 +1,9 @@
 import { useMemo } from 'react';
 import { Html } from '@react-three/drei';
 import type { Memory } from '@/lib/data';
-import { TYPE_COLORS, weightColor } from '@/lib/colors';
+import { TYPE_COLORS, weightColor, domainColor } from '@/lib/colors';
 import { useUiStore } from '@/lib/ui-store';
+import type { ColorMode } from '@/lib/ui-store';
 
 // ---------------------------------------------------------------------------
 // MemoryLabels — floating billboard labels with the memory's actual content.
@@ -28,6 +29,8 @@ export interface MemoryLabelsProps {
   matchIds: Set<string>;
   hoverId: string | null;
   selectedId: string | null;
+  colorMode: ColorMode;
+  regionMap: Map<string, number>;
 }
 
 export default function MemoryLabels({
@@ -38,6 +41,8 @@ export default function MemoryLabels({
   matchIds,
   hoverId,
   selectedId,
+  colorMode,
+  regionMap,
 }: MemoryLabelsProps) {
   const { labels } = useUiStore();
 
@@ -76,7 +81,7 @@ export default function MemoryLabels({
       {entries.map(({ index, kind }) => {
         const n = nodes[index];
         const [x, y, z] = positions[index];
-        const color = TYPE_COLORS[n.type];
+        const color = colorMode === 'domain' ? domainColor(n, regionMap) : TYPE_COLORS[n.type];
         const focus = kind === 'focus';
         const content = n.content.length > CONTENT_CHARS ? `${n.content.slice(0, CONTENT_CHARS)}…` : n.content;
         return (

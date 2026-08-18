@@ -15,6 +15,8 @@ import type { GraphFilters, Memory, MemoryType } from '@/lib/data';
 import { MEMORIES, EDGES, getGraph, getStats, getDomains, getMemory } from '@/lib/data';
 import { TYPE_COLORS, EDGE_COLORS, weightColor, weightLabel, SCOPE_COLORS } from '@/lib/colors';
 import { uiStore, useUiStore } from '@/lib/ui-store';
+import { computeDomainRegionMap } from '@/lib/domain-regions';
+import { BRAIN_REGIONS } from '@/lib/domain-regions';
 import HoloPanel from '@/components/HoloPanel';
 import SynapseTag from '@/components/SynapseTag';
 import NodeDetailDrawer from '@/components/NodeDetailDrawer';
@@ -627,12 +629,53 @@ function LabelsToggle() {
   );
 }
 
+/** HUD toggle for neuron coloring: domain (brain regions) ↔ type (memory type). */
+function ColorModeToggle() {
+  const { colorMode } = useUiStore();
+  const isDomain = colorMode === 'domain';
+  const color = isDomain ? '#ff3355' : '#ffd319';
+  return (
+    <button
+      type="button"
+      onClick={() => uiStore.set({ colorMode: isDomain ? 'type' : 'domain' })}
+      aria-pressed={isDomain}
+      className={cn(
+        'flex shrink-0 items-center gap-1.5 font-display text-[10px] font-bold tracking-[0.18em] transition-colors',
+        isDomain ? 'text-hi' : 'text-dim hover:text-hi',
+      )}
+    >
+      <span
+        className={cn(
+          'h-1.5 w-1.5 rounded-full transition-shadow',
+          isDomain ? '' : 'bg-dim',
+        )}
+        style={isDomain ? { backgroundColor: color, boxShadow: `0 0 6px ${color}` } : undefined}
+      />
+      COLOR: {isDomain ? 'DOMAIN' : 'TYPE'}
+    </button>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Legend — design.md §7.12
 // ---------------------------------------------------------------------------
 
 function Legend() {
   const [open, setOpen] = useState(false);
+  const { colorMode, dataVersion } = useUiStore();
+  // Domain region map + counts for the domain legend view
+  const domainEntries = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const m of MEMORIES) if (m.domain) counts.set(m.domain, (counts.get(m.domain) ?? 0) + 1);
+    const rmap = computeDomainRegionMap(MEMORIES);
+    return [...counts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([domain, count]) => ({
+        domain,
+        count,
+        region: BRAIN_REGIONS[rmap.get(domain) ?? 9],
+      }));
+  }, [dataVersion]);
   return (
     <div className="relative shrink-0">
       <button
@@ -649,17 +692,38 @@ function Legend() {
             animate={{ opacity: 1, y: 0, height: 'auto' }}
             exit={{ opacity: 0, y: 8, height: 0 }}
             transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
-            className="absolute bottom-8 right-0 z-40 w-[300px] overflow-hidden"
+            className="absolute bottom-8 right-0 z-40 w-[340px] overflow-hidden"
           >
             <HoloPanel variant="ghost" title="Legend" className="p-0">
               <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 p-4">
-                <div className="micro-label col-span-2">Neuron = memory type</div>
-                {ALL_TYPES.map((t) => (
-                  <div key={t} className="flex items-center gap-2">
-                    <span className="h-2 w-2 rounded-full" style={{ backgroundColor: TYPE_COLORS[t], boxShadow: `0 0 5px ${TYPE_COLORS[t]}` }} />
-                    <span className="font-mono text-[10px] text-mid">{t}</span>
-                  </div>
-                ))}
+                {colorMode === 'domain' ? (
+                  <>
+                    <div className="micro-label col-span-2">Neuron color = domain → brain region</div>
+                    {domainEntries.map(({ domain, count, region }) => (
+                      <div key={domain} className="flex items-center gap-2">
+                        <span
+                          className="h-2 w-2 shrink-0 rounded-full"
+                          style={{ backgroundColor: region.color, boxShadow: `0 0 5px ${region.color}` }}
+                        />
+                        <span className="font-mono text-[10px] text-mid">{domain}</span>
+                        <span className="ml-auto font-mono text-[9px] text-dim">{region.name}</span>
+                        <span className="font-mono text-[9px] text-dim">{count}</span>
+                      </div>
+                    ))}
+                    <div className="micro-label col-span-2 mt-2 text-arc">EACH DOMAIN = A BRAIN REGION</div>
+                  </>
+                ) : (
+                  <>
+                    <div className="micro-label col-span-2">Neuron = memory type</div>
+                    {ALL_TYPES.map((t) => (
+                      <div key={t} className="flex items-center gap-2">
+                        <span className="h-2 w-2 rounded-full" style={{ backgroundColor: TYPE_COLORS[t], boxShadow: `0 0 5px ${TYPE_COLORS[t]}` }} />
+                        <span className="font-mono text-[10px] text-mid">{t}</span>
+                      </div>
+                    ))}
+                    <div className="micro-label col-span-2 mt-2 text-arc">REGIONS UNCHANGED · COLOR = TYPE</div>
+                  </>
+                )}
                 <div className="micro-label col-span-2 mt-2">Synapse = relationship</div>
                 {Object.entries(EDGE_COLORS).map(([e, c]) => (
                   <div key={e} className="flex items-center gap-2">
@@ -684,7 +748,6 @@ function Legend() {
                   <span className="text-[#ffd319]">STABLE &gt;.25</span>
                   <span className="text-danger">FADING ≤.25</span>
                 </div>
-                <div className="micro-label col-span-2 mt-2 text-arc">LEFT = PROJECT · RIGHT = GLOBAL</div>
                 <div className="col-span-2 font-mono text-[10px] text-dim">IDLE ACTIVITY = spontaneous cascade</div>
                 <div className="col-span-2 font-mono text-[10px] text-dim">SCROLL TO ENTER THE CORTEX · DBL-CLICK VOID TO DIVE</div>
               </div>
@@ -930,7 +993,7 @@ export default function Home() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [filters, setFilters] = useState<FilterState>(EMPTY_FILTERS);
   const containerRef = useRef<HTMLDivElement>(null);
-  const { scope, dataVersion } = useUiStore();
+  const { scope, dataVersion, colorMode } = useUiStore();
 
   const finishBoot = useCallback(() => {
     sessionStorage.setItem('rm-booted', '1');
@@ -966,6 +1029,10 @@ export default function Home() {
     return { nodes, edges };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dataVersion]);
+
+  // Domain → brain region map (deterministic, recomputed on dataset swap).
+  // Shared by BrainCanvas (neuron colors) + Legend (domain→region→color grid).
+  const regionMap = useMemo(() => computeDomainRegionMap(MEMORIES), [dataVersion]);
 
   const select = useCallback((id: string | null) => {
     setSelectedId(id);
@@ -1068,6 +1135,8 @@ export default function Home() {
               focusId={focusId}
               fireAt={fireAt}
               booted={booted}
+              colorMode={colorMode}
+              regionMap={regionMap}
               onHover={setHoverId}
               onSelect={select}
             />
@@ -1121,6 +1190,7 @@ export default function Home() {
           <EventTicker booted={booted} />
           <span className="micro-label hidden shrink-0 lg:block">SCROLL TO ENTER THE CORTEX</span>
           <LabelsToggle />
+          <ColorModeToggle />
           <Legend />
         </motion.div>
       </div>

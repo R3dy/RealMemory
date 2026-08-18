@@ -2,6 +2,7 @@ import { useSyncExternalStore } from 'react';
 import type { Scope } from './data';
 
 export type ScopeFilter = Scope | 'all';
+export type ColorMode = 'domain' | 'type';
 
 export interface UiState {
   /** Global scope quick-toggle (top HUD bar) — mirrors the graph scope filter. */
@@ -12,6 +13,8 @@ export interface UiState {
   reducedMotion: boolean;
   /** Floating memory labels on the 3D graph. */
   labels: boolean;
+  /** Neuron coloring: 'domain' (region colors, default) or 'type' (TYPE_COLORS). */
+  colorMode: ColorMode;
   /** Bumped by the data layer whenever the dataset is swapped (live/import/demo). */
   dataVersion: number;
 }
@@ -25,6 +28,7 @@ let state: UiState = {
   pulseDensity: 0.8,
   reducedMotion: MEDIA_REDUCED,
   labels: true,
+  colorMode: 'domain',
   dataVersion: 0,
 };
 

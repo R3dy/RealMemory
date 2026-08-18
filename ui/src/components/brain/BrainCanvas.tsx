@@ -7,9 +7,10 @@ import { EffectComposer, Bloom, Vignette } from '@react-three/postprocessing';
 import * as THREE from 'three';
 import gsap from 'gsap';
 import type { GraphEdge, Memory } from '@/lib/data';
-import { TYPE_COLORS, EDGE_COLORS } from '@/lib/colors';
+import { TYPE_COLORS, EDGE_COLORS, domainColor } from '@/lib/colors';
 import { computeBrainLayout } from '@/lib/brain-layout';
 import { useUiStore } from '@/lib/ui-store';
+import type { ColorMode } from '@/lib/ui-store';
 import { getGlowTexture, getBoltTexture } from './textures';
 import BrainShell from './BrainShell';
 import MemoryLabels from './MemoryLabels';
@@ -58,11 +59,18 @@ function pushBurst(fx: FxState, burst: EdgeBurst) {
   if (fx.bursts.length > MAX_BURSTS) fx.bursts.splice(0, fx.bursts.length - MAX_BURSTS);
 }
 
-function buildSceneData(nodes: Memory[], edges: GraphEdge[]): SceneData {
+function buildSceneData(
+  nodes: Memory[],
+  edges: GraphEdge[],
+  colorMode: ColorMode,
+  regionMap: Map<string, number>,
+): SceneData {
   const layout = computeBrainLayout(nodes, edges);
   const indexOf = new Map(nodes.map((n, i) => [n.id, i]));
   const positions = nodes.map((n) => layout.get(n.id) ?? ([0, 0, 0] as [number, number, number]));
-  const baseColors = nodes.map((n) => new THREE.Color(TYPE_COLORS[n.type]));
+  const baseColors = nodes.map((n) =>
+    new THREE.Color(colorMode === 'domain' ? domainColor(n, regionMap) : TYPE_COLORS[n.type]),
+  );
   const dayMs = 86_400_000;
   const recent = nodes.map((n) => Date.now() - new Date(n.updatedAt).getTime() < dayMs);
 
@@ -908,6 +916,8 @@ function SceneContent({
           matchIds={matchIds}
           hoverId={hoverId}
           selectedId={selectedId}
+          colorMode={colorMode}
+          regionMap={regionMap}
         />
       </group>
       <CascadeDriver
@@ -939,12 +949,19 @@ export interface BrainCanvasProps {
   fireAt: number;
   /** entrance animations run once true */
   booted: boolean;
+  /** neuron coloring mode */
+  colorMode: ColorMode;
+  /** domain → region index map (for domain coloring) */
+  regionMap: Map<string, number>;
   onHover: (id: string | null) => void;
   onSelect: (id: string | null) => void;
 }
 
 export default function BrainCanvas(props: BrainCanvasProps) {
-  const data = useMemo(() => buildSceneData(props.nodes, props.edges), [props.nodes, props.edges]);
+  const data = useMemo(
+    () => buildSceneData(props.nodes, props.edges, props.colorMode, props.regionMap),
+    [props.nodes, props.edges, props.colorMode, props.regionMap],
+  );
   const fx = useRef<FxState>({ flashes: new Map(), bursts: [] });
   // a dataset swap invalidates any in-flight cascades from the old graph
   useEffect(() => {
