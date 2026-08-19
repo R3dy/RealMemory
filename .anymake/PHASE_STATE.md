@@ -46,6 +46,16 @@ autonomous_mode: true
 
 ## Agile increments (post-launch)
 
+### Issue #48 — Render memories as color-coded neurons clustered by domain into anatomical brain regions (2026-08-18)
+- **Status:** CLOSED (PR #49 squash merge `4631883`, tag `issue-48`)
+- **What:** The 3D Brain Graph UI now clusters memories by `domain` into 10 anatomical brain regions (frontal/parietal/temporal/occipital lobes, cerebellum, brain stem), color-coded by region. New `ui/src/lib/domain-regions.ts` (standalone, testable from repo root): 10 regions with anchors + colors, `computeDomainRegionMap` (deterministic, count-desc assignment), `regionIndexFor`. `brain-layout.ts` rewritten: domain-region seeding + `forceRegion` (replaces scope-hemisphere `forceX`/`forceY`/`forceZ`), `forceCerebellum` + `forceStem` containment for regions 8-9 (outside cerebrum volume). `lobe` retained, derived from `regionIndex` parity (even→left, odd→right, 8-9→0). `colors.ts`: `domainColor(memory, regionMap)`. `ui-store.ts`: `colorMode: 'domain'|'type'` (default `'domain'`). `BrainCanvas` + `MemoryLabels`: neuron/label color follows `colorMode`. `Home.tsx`: `ColorModeToggle` (domain↔type, styled like `LabelsToggle`), rewritten `Legend` (domain→region→color grid with counts when domain mode, type grid when type mode). "LEFT = PROJECT · RIGHT = GLOBAL" line removed (layout is no longer scope-hemisphere). 12 new tests (`tests/domain-regions.test.ts`). Also includes uncommitted `server.ts` CORS fix from issue #46 session.
+- **Pipeline:** anymake-agile — Solution Architect plan written directly (343 lines). Plan Reviewer R1 NEEDS CHANGES (1 blocking: B1 `SimNode.lobe` removal contradicted `forceCerebrum` retention — regions 0-7 span both hemispheres, `lobe` needed for ellipsoid selection). Plan revised: `lobe` retained, derived from `regionIndex` parity. R2 APPROVED. PO Proxy APPROVED (non-security, additive, presentation-only, reviewer-approved). Direct build per Rule 14.
+- **Intent layer:** INV-013 (localhost/read-only/no-framework) PRESERVED — node:http unchanged (CORS fix additive). INV-014 (runtime dep cap) PRESERVED — all new code in `ui/` devDeps. INV-015 (API stability) PRESERVED — no MemoryStore or API change. INV-019 (dist committed) PRESERVED. No intent conflict, no superseding ADR. Classification: Additive (presentation-only).
+- **Tests:** 722 pass (12 new + 710 existing). 5 pre-existing EADDRINUSE (port 9333 collision with live MCP server). No new failures.
+- **Version:** 0.14.0 → 0.15.0 (MINOR — additive presentation-only, no breaking change; pre-1.0 semver per ADR-004).
+- **Experience check:** PASS — headless chromium screenshot confirmed 6 distinct domain region colors visible (green=realvol 548px, amber=realhax 395px, orange 199px, violet 170px, red 66px, cyan=shell 968px). `COLOR: DOMAIN` toggle present in DOM. Boot sequence skipped via sessionStorage pre-set.
+- **Revert:** `git revert -m 1 4631883 && npm run build` — no schema, no deps, no server API change.
+
 ### Issue #46 — Replace web UI with 3D Brain Graph prototype (2026-08-18)
 - **Status:** CLOSED (PR #47 squash merge `4609046`, tag `issue-46`)
 - **What:** Completely replaced the embedded HTML/vis-network graph browser with a React + TypeScript + Tailwind + Three.js (react-three-fiber) JARVIS-style 3D Brain UI. New `ui/` directory (own `package.json`, vite build → `src/browser/static/ui/`). `server.ts` modified: serve built `index.html` + hashed assets, SPA fallback for client-side routes (`/memories`, `/domains`, `/brain`, `/vitals`), remove vis-network serving, path traversal guard, `/api/*` paths return JSON 404 (not hijacked by SPA fallback). Route `/health` → `/vitals` renamed in App.tsx + NavRail.tsx + Navbar.tsx (avoids server `/health` endpoint conflict). `assets.ts` + vis-network static files deleted. Tests: deleted `browser-assets.test.ts` + `browser-mobile-ui.test.ts` (tested embedded HTML strings), rewrote `build-assets.test.ts` + `browser-server.test.ts`. 710 tests pass (5 pre-existing EADDRINUSE). Smoke test verified: `/` → SPA shell, `/memories` → SPA fallback, `/health` → JSON `{ok:true}` (NOT hijacked), `/api/*` unchanged, `/api/nonexistent` → JSON 404.
@@ -218,23 +228,26 @@ autonomous_mode: true
 - **Follow-ups identified:** (a) domain backfill on 11 undefined-domain memories, (b) per-project architecture facts for realvol/realcode/basecamp, (c) session summaries for more high-cost sessions, (d) exhaustive pass over remaining ~1600 sessions (the methodology is repeatable).
 
 resume_next: >
-  STATUS (Aug 18 2026): realmemory v0.14.0 — web UI replaced
-  with 3D Brain Graph prototype (issue #46, PR #47, merge 4609046,
-  tag issue-46). React + TypeScript + Tailwind + Three.js app in
-  ui/ (own package.json, vite build to src/browser/static/ui/).
-  server.ts serves built UI + SPA fallback. Route /health renamed
-  to /vitals in UI (3 files). assets.ts + vis-network deleted.
-  710 tests pass (5 pre-existing EADDRINUSE).
+  STATUS (Aug 18 2026): realmemory v0.15.0 — memories now rendered
+  as color-coded neurons clustered by domain into anatomical brain
+  regions (issue #48, PR #49, merge 4631883, tag issue-48). New
+  ui/src/lib/domain-regions.ts. brain-layout.ts rewritten with
+  forceRegion + forceCerebellum + forceStem. BrainCanvas + labels
+  color by domain (default) or type (toggle). ColorModeToggle +
+  rewritten Legend in Home.tsx. 722 tests pass (12 new, 5
+  pre-existing EADDRINUSE).
 
   REMAINING (in priority order):
-  (1) Royce restarts OpenCode — picks up v0.14.0. Browse
-  http://127.0.0.1:9333 to see the new 3D brain graph UI.
+  (1) Royce restarts OpenCode — picks up v0.15.0. Browse
+  http://127.0.0.1:9333 — each domain is a distinct colored brain
+  region. Open Legend (bottom bar) for domain→region→color mapping.
+  Click COLOR: DOMAIN to toggle to type coloring.
   (2) Phase 4b (permission.ask) — CANNOT BUILD. The hook is
   permission.asked (an event, not interceptable). Deferred.
   (3) Cartographer refresh — changes are presentation-only
   (no new ADR, no intent conflict). ADR-009 id amendment still
   pending (from issue #28).
-  (4) npm publish v0.14.0 — requires Royce's npm login. CRITICAL:
+  (4) npm publish v0.15.0 — requires Royce's npm login. CRITICAL:
   add "skills" and "scripts" to package.json files[] before
   publishing. Also: ui/ directory + src/browser/static/ui/ are
   NOT in files[] — they're build-time only (devDeps), not shipped.
