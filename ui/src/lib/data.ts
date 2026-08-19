@@ -1057,7 +1057,7 @@ function fetchAggregates(base: string) {
         touched = true;
       }
     } catch { /* keep demo series */ }
-    if (touched) bumpVersion();
+    if (touched) uiStore.set({ aggregateVersion: uiStore.getState().aggregateVersion + 1 });
   })();
 }
 

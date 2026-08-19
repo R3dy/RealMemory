@@ -204,16 +204,17 @@ function BootSequence({ onDone }: { onDone: () => void }) {
 // ---------------------------------------------------------------------------
 
 function StatsBar({ booted }: { booted: boolean }) {
-  const { dataVersion } = useUiStore();
+  const { dataVersion, aggregateVersion } = useUiStore();
+  const ver = dataVersion + aggregateVersion;
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const stats = useMemo(() => getStats(), [dataVersion]);
+  const stats = useMemo(() => getStats(), [ver]);
   const avgWeight = useMemo(
     () => MEMORIES.reduce((s, m) => s + m.weight, 0) / Math.max(1, MEMORIES.length),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [dataVersion],
+    [ver],
   );
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const archived = useMemo(() => MEMORIES.filter((m) => m.status === 'archived').length, [dataVersion]);
+  const archived = useMemo(() => MEMORIES.filter((m) => m.status === 'archived').length, [ver]);
   const projectPct = (stats.byScope.project / Math.max(1, stats.totalMemories)) * 100;
 
   if (!booted) return <div className="h-11 shrink-0 border-b border-panel-border" />;
@@ -300,11 +301,12 @@ function FilterPanel({
   const [collapsed, setCollapsed] = useState(false);
   const [openDomains, setOpenDomains] = useState<Set<string>>(new Set());
   const [tagInput, setTagInput] = useState('');
-  const { dataVersion } = useUiStore();
+  const { dataVersion, aggregateVersion } = useUiStore();
+  const ver = dataVersion + aggregateVersion;
+  // eslint-disable-next-line react-hooks-exhaustive-deps
+  const domains = useMemo(() => getDomains(), [ver]);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const domains = useMemo(() => getDomains(), [dataVersion]);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const stats = useMemo(() => getStats(), [dataVersion]);
+  const stats = useMemo(() => getStats(), [ver]);
 
   const patch = (p: Partial<FilterState>) => onChange({ ...filters, ...p });
 

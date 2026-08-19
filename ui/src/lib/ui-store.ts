@@ -17,6 +17,10 @@ export interface UiState {
   colorMode: ColorMode;
   /** Bumped by the data layer whenever the dataset is swapped (live/import/demo). */
   dataVersion: number;
+  /** Bumped when server aggregates (stats/domains/metrics) arrive — does NOT
+   *  trigger canvasGraph/regionMap recompute (which would recreate the entire
+   *  3D scene and crash WebGL). Only stats/domain/health panels depend on this. */
+  aggregateVersion: number;
 }
 
 const MEDIA_REDUCED =
@@ -30,6 +34,7 @@ let state: UiState = {
   labels: true,
   colorMode: 'domain',
   dataVersion: 0,
+  aggregateVersion: 0,
 };
 
 const listeners = new Set<() => void>();
