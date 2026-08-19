@@ -508,6 +508,14 @@ function validateConfig(config) {
       throw new Error("brain.eventRetention must be an integer >= 1000");
     }
   }
+  if (config.brain?.selfModel !== void 0 && typeof config.brain.selfModel !== "boolean") {
+    throw new Error("brain.selfModel must be a boolean");
+  }
+  if (config.brain?.identityTokens !== void 0) {
+    if (typeof config.brain.identityTokens !== "number" || config.brain.identityTokens < 100 || config.brain.identityTokens > 1e3) {
+      throw new Error("brain.identityTokens must be a number in [100, 1000]");
+    }
+  }
 }
 function readJsonFile(path) {
   const content = (0, import_node_fs.readFileSync)(path, "utf-8");
@@ -630,7 +638,8 @@ var VALID_TYPES = /* @__PURE__ */ new Set([
   "codebase_fact",
   "lesson_learned",
   "session_summary",
-  "contextual_note"
+  "contextual_note",
+  "self_model"
 ]);
 var PROMOTABLE_TYPES = /* @__PURE__ */ new Set([
   "user_preference",
@@ -2142,7 +2151,8 @@ var MEMORY_TYPES = /* @__PURE__ */ new Set([
   "codebase_fact",
   "lesson_learned",
   "session_summary",
-  "contextual_note"
+  "contextual_note",
+  "self_model"
 ]);
 function getUiDir() {
   const here = (0, import_node_path3.dirname)((0, import_node_url.fileURLToPath)(import_meta.url));
@@ -2240,7 +2250,7 @@ async function handleRequest(req, res, store, uiDir) {
     return;
   }
   if (pathname === "/version") {
-    sendJson(res, 200, { version: "0.16.0" });
+    sendJson(res, 200, { version: "0.17.0" });
     return;
   }
   if (pathname === "/api/stats") {
@@ -2790,7 +2800,7 @@ function createMcpTools(store) {
   ];
 }
 var SERVER_NAME = "realmemory";
-var SERVER_VERSION = "0.16.0";
+var SERVER_VERSION = "0.17.0";
 async function startMcpServer(config, opts) {
   const mergedConfig = config ?? loadConfig();
   const ownLifecycle = opts?.ownLifecycle ?? false;

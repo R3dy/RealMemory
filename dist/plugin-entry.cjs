@@ -643,6 +643,14 @@ function validateConfig(config) {
       throw new Error("brain.eventRetention must be an integer >= 1000");
     }
   }
+  if (config.brain?.selfModel !== void 0 && typeof config.brain.selfModel !== "boolean") {
+    throw new Error("brain.selfModel must be a boolean");
+  }
+  if (config.brain?.identityTokens !== void 0) {
+    if (typeof config.brain.identityTokens !== "number" || config.brain.identityTokens < 100 || config.brain.identityTokens > 1e3) {
+      throw new Error("brain.identityTokens must be a number in [100, 1000]");
+    }
+  }
 }
 function readJsonFile(path) {
   const content = (0, import_node_fs.readFileSync)(path, "utf-8");
@@ -741,7 +749,8 @@ var VALID_TYPES = /* @__PURE__ */ new Set([
   "codebase_fact",
   "lesson_learned",
   "session_summary",
-  "contextual_note"
+  "contextual_note",
+  "self_model"
 ]);
 var PROMOTABLE_TYPES = /* @__PURE__ */ new Set([
   "user_preference",
@@ -2480,6 +2489,184 @@ async function flush(store) {
   }
 }
 
+// src/self.ts
+async function recordSelfEpisode(store, state) {
+  if (state.config.brain?.selfModel === false) return 0;
+  let written = 0;
+  const sessionId = state.sessionId ?? void 0;
+  if (state.lastBlock) {
+    const content = `I blocked ${state.lastBlock.tool} (rule ${state.lastBlock.memoryId.slice(0, 8)}, confidence ${state.lastBlock.confidence.toFixed(2)}) and was overruled \u2014 the user retried the call.`;
+    try {
+      await store.store({
+        content,
+        type: "self_model",
+        scope: "project",
+        confidence: 0.5,
+        tags: ["self-episode", "override"],
+        metadata: {
+          category: "failure_mode",
+          tool: state.lastBlock.tool,
+          memoryId: state.lastBlock.memoryId,
+          source: "recordSelfEpisode"
+        }
+      });
+      written++;
+    } catch {
+    }
+  }
+  if (state.lastPredictionOutcome && state.lastPredictionOutcome.surprise >= 0.5) {
+    const outcome = state.lastPredictionOutcome;
+    const content = `I expected ${outcome.prediction.willSucceed ? "success" : "failure"} for a tool call (confidence ${outcome.prediction.confidence.toFixed(2)}), but observed ${outcome.actual.success ? "success" : "error"} \u2014 surprise ${outcome.surprise.toFixed(2)}.`;
+    try {
+      await store.store({
+        content,
+        type: "self_model",
+        scope: "project",
+        confidence: 0.4 + 0.3 * outcome.surprise,
+        tags: ["self-episode", "high-surprise"],
+        metadata: {
+          category: "failure_mode",
+          surprise: outcome.surprise,
+          predicted: outcome.prediction,
+          actual: outcome.actual,
+          source: "recordSelfEpisode"
+        }
+      });
+      written++;
+    } catch {
+    }
+  }
+  if (state.lastUserIntent === "correction" && state.lastUserText) {
+    const content = `I was corrected by the user this session: "${state.lastUserText.slice(0, 120)}".`;
+    try {
+      await store.store({
+        content,
+        type: "self_model",
+        scope: "project",
+        confidence: 0.6,
+        tags: ["self-episode", "correction"],
+        metadata: {
+          category: "failure_mode",
+          intent: "correction",
+          source: "recordSelfEpisode"
+        }
+      });
+      written++;
+    } catch {
+    }
+  }
+  if (state.lastToolCapture) {
+    const tc = state.lastToolCapture;
+    const isError = tc.isError ? "with errors" : "successfully";
+    const content = `I used ${tc.tool} ${isError} this session${tc.command ? ` (${tc.command.slice(0, 60)})` : tc.filePath ? ` (${tc.filePath})` : ""}.`;
+    try {
+      await store.store({
+        content,
+        type: "self_model",
+        scope: "project",
+        confidence: 0.3,
+        tags: ["self-episode", "tool-mix"],
+        metadata: {
+          category: "disposition",
+          tool: tc.tool,
+          isError: tc.isError,
+          source: "recordSelfEpisode"
+        }
+      });
+      written++;
+    } catch {
+    }
+  }
+  if (state.reflexCache && state.reflexCache.rules.length > 0) {
+    const content = `I have ${state.reflexCache.rules.length} reflex rules cached (arousal ${state.reflexCache.arousal.toFixed(2)}).`;
+    try {
+      await store.store({
+        content,
+        type: "self_model",
+        scope: "project",
+        confidence: 0.3,
+        tags: ["self-episode", "reflex-state"],
+        metadata: {
+          category: "disposition",
+          ruleCount: state.reflexCache.rules.length,
+          arousal: state.reflexCache.arousal,
+          source: "recordSelfEpisode"
+        }
+      });
+      written++;
+    } catch {
+    }
+  }
+  return written;
+}
+async function assembleIdentity(store, opts = {}) {
+  const tokenBudget = opts.identityTokens ?? 350;
+  const tier1Budget = Math.round(tokenBudget * 0.6);
+  const tier2Budget = tokenBudget - tier1Budget;
+  const lines = [];
+  const memoryIds = [];
+  try {
+    const selfResults = await store.search({
+      types: ["self_model"],
+      scope: "all",
+      minWeight: 0.3,
+      sortBy: "weight",
+      sortOrder: "desc",
+      limit: 5
+    });
+    for (const r of selfResults.memories) {
+      const line = `- ${r.content.slice(0, 120)}`;
+      if (lines.join("\n").length + line.length > tier1Budget) break;
+      lines.push(line);
+      memoryIds.push(r.id);
+    }
+  } catch {
+  }
+  if (lines.length === 0) {
+    try {
+      const prefResults = await store.search({
+        scope: "global",
+        types: ["user_preference"],
+        sortBy: "weight",
+        sortOrder: "desc",
+        limit: 1
+      });
+      if (prefResults.memories.length > 0) {
+        const m = prefResults.memories[0];
+        lines.push(`- ${m.content.slice(0, 120)}`);
+        memoryIds.push(m.id);
+      }
+    } catch {
+    }
+  }
+  try {
+    const lessonResults = await store.search({
+      types: ["lesson_learned"],
+      scope: "all",
+      minWeight: 0.3,
+      sortBy: "weight",
+      sortOrder: "desc",
+      limit: 3
+    });
+    const tier2Start = lines.length;
+    for (const r of lessonResults.memories) {
+      const line = `- ${r.content.slice(0, 100)}`;
+      const tier2Len = lines.slice(tier2Start).join("\n").length;
+      if (tier2Len + line.length > tier2Budget) break;
+      lines.push(line);
+      memoryIds.push(r.id);
+    }
+  } catch {
+  }
+  if (lines.length === 0) {
+    return { content: "", memoryIds: [] };
+  }
+  return {
+    content: lines.join("\n"),
+    memoryIds
+  };
+}
+
 // src/hook-probe.ts
 var ALWAYS_FIRE_HOOKS = [
   "event:session.created",
@@ -2899,7 +3086,8 @@ var TYPE_DESCRIPTIONS = {
   codebase_fact: "structural facts discovered about the project.",
   lesson_learned: 'not just errors: includes "approach X worked well", "Y was a dead end", any hard-won insight.',
   session_summary: "one summary of what happened, always.",
-  contextual_note: "anything situational worth keeping that doesn't fit above."
+  contextual_note: "anything situational worth keeping that doesn't fit above.",
+  self_model: "facts the agent has earned about itself: dispositions, competencies, failure modes (templated from measured state, never LLM-interpreted)."
 };
 function buildSummarizationPrompt(transcript) {
   const typeLines = Object.keys(TYPE_DESCRIPTIONS).map((t) => `- ${t}: ${TYPE_DESCRIPTIONS[t]}`).join("\n");
@@ -3386,19 +3574,31 @@ async function realmemoryPlugin(ctx) {
           const brainConfigWM = state.config;
           if (brainConfigWM.brain?.workingMemory !== false) {
             try {
-              const idResults = await store.search({
-                scope: "global",
-                types: ["user_preference"],
-                sortBy: "weight",
-                sortOrder: "desc",
-                limit: 1
-              });
-              if (idResults.memories.length > 0) {
-                const m = idResults.memories[0];
-                state.workingMemory.identity = {
-                  content: m.content,
-                  memoryIds: [m.id]
-                };
+              if (brainConfigWM.brain?.selfModel !== false) {
+                const identity = await assembleIdentity(store, {
+                  identityTokens: brainConfigWM.brain?.identityTokens
+                });
+                if (identity.content) {
+                  state.workingMemory.identity = {
+                    content: identity.content,
+                    memoryIds: identity.memoryIds
+                  };
+                }
+              } else {
+                const idResults = await store.search({
+                  scope: "global",
+                  types: ["user_preference"],
+                  sortBy: "weight",
+                  sortOrder: "desc",
+                  limit: 1
+                });
+                if (idResults.memories.length > 0) {
+                  const m = idResults.memories[0];
+                  state.workingMemory.identity = {
+                    content: m.content,
+                    memoryIds: [m.id]
+                  };
+                }
               }
             } catch {
             }
@@ -3509,6 +3709,24 @@ async function realmemoryPlugin(ctx) {
               state.lastToolCapture = null;
               await flush(store).catch(() => {
               });
+              try {
+                const selfCount = await recordSelfEpisode(store, {
+                  sessionId: state.sessionId ?? void 0,
+                  lastUserText: state.lastUserText,
+                  lastUserIntent: state.lastUserIntent,
+                  lastToolCapture: state.lastToolCapture,
+                  lastPredictionOutcome: state.lastPredictionOutcome,
+                  lastBlock: state.lastBlock,
+                  reflexCache: state.reflexCache ? { rules: state.reflexCache.rules, arousal: state.reflexCache.arousal } : null,
+                  injectedMemoryIds: state.injectedMemoryIds,
+                  lastInjectedMemoryIds: state.lastInjectedMemoryIds,
+                  config: state.config
+                });
+                if (selfCount > 0) {
+                  await log("debug", `Self-episode: recorded ${selfCount} self_model rows`);
+                }
+              } catch (selfErr) {
+              }
             })().catch(
               (error) => log(
                 "error",

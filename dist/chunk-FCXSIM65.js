@@ -230,6 +230,14 @@ function validateConfig(config) {
       throw new Error("brain.eventRetention must be an integer >= 1000");
     }
   }
+  if (config.brain?.selfModel !== void 0 && typeof config.brain.selfModel !== "boolean") {
+    throw new Error("brain.selfModel must be a boolean");
+  }
+  if (config.brain?.identityTokens !== void 0) {
+    if (typeof config.brain.identityTokens !== "number" || config.brain.identityTokens < 100 || config.brain.identityTokens > 1e3) {
+      throw new Error("brain.identityTokens must be a number in [100, 1000]");
+    }
+  }
 }
 function readJsonFile(path) {
   const content = readFileSync(path, "utf-8");
@@ -574,7 +582,8 @@ var VALID_TYPES = /* @__PURE__ */ new Set([
   "codebase_fact",
   "lesson_learned",
   "session_summary",
-  "contextual_note"
+  "contextual_note",
+  "self_model"
 ]);
 var PROMOTABLE_TYPES = /* @__PURE__ */ new Set([
   "user_preference",

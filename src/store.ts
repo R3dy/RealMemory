@@ -48,6 +48,7 @@ const VALID_TYPES: ReadonlySet<MemoryType> = new Set<MemoryType>([
   "lesson_learned",
   "session_summary",
   "contextual_note",
+  "self_model",
 ]);
 
 /**

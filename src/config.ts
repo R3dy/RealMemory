@@ -238,6 +238,22 @@ export function validateConfig(config: MemoryStoreConfig): void {
       throw new Error("brain.eventRetention must be an integer >= 1000");
     }
   }
+  // Synthetic-self Phase 9: brain.selfModel + brain.identityTokens validation.
+  if (
+    config.brain?.selfModel !== undefined &&
+    typeof config.brain.selfModel !== "boolean"
+  ) {
+    throw new Error("brain.selfModel must be a boolean");
+  }
+  if (config.brain?.identityTokens !== undefined) {
+    if (
+      typeof config.brain.identityTokens !== "number" ||
+      config.brain.identityTokens < 100 ||
+      config.brain.identityTokens > 1000
+    ) {
+      throw new Error("brain.identityTokens must be a number in [100, 1000]");
+    }
+  }
 }
 
 function readJsonFile(path: string): Record<string, unknown> {

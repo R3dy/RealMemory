@@ -1,7 +1,7 @@
 import {
   MemoryStore,
   loadConfig
-} from "./chunk-QRA66SYI.js";
+} from "./chunk-FCXSIM65.js";
 
 // src/mcp-server.ts
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -25,7 +25,8 @@ var MEMORY_TYPES = /* @__PURE__ */ new Set([
   "codebase_fact",
   "lesson_learned",
   "session_summary",
-  "contextual_note"
+  "contextual_note",
+  "self_model"
 ]);
 function getUiDir() {
   const here = dirname(fileURLToPath(import.meta.url));
@@ -123,7 +124,7 @@ async function handleRequest(req, res, store, uiDir) {
     return;
   }
   if (pathname === "/version") {
-    sendJson(res, 200, { version: "0.16.0" });
+    sendJson(res, 200, { version: "0.17.0" });
     return;
   }
   if (pathname === "/api/stats") {
@@ -673,7 +674,7 @@ function createMcpTools(store) {
   ];
 }
 var SERVER_NAME = "realmemory";
-var SERVER_VERSION = "0.16.0";
+var SERVER_VERSION = "0.17.0";
 async function startMcpServer(config, opts) {
   const mergedConfig = config ?? loadConfig();
   const ownLifecycle = opts?.ownLifecycle ?? false;

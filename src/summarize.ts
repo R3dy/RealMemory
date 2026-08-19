@@ -43,6 +43,8 @@ const TYPE_DESCRIPTIONS: Record<MemoryType, string> = {
   session_summary: "one summary of what happened, always.",
   contextual_note:
     "anything situational worth keeping that doesn't fit above.",
+  self_model:
+    "facts the agent has earned about itself: dispositions, competencies, failure modes (templated from measured state, never LLM-interpreted).",
 };
 
 /**

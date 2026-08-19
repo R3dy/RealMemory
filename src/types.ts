@@ -7,7 +7,8 @@ export type MemoryType =
   | "codebase_fact"
   | "lesson_learned"
   | "session_summary"
-  | "contextual_note";
+  | "contextual_note"
+  | "self_model"; // Synthetic-self Phase 9: facts the agent stores about itself
 
 /**
  * The kind of relationship between two memories — used to build the memory graph.
@@ -462,6 +463,19 @@ export interface MemoryStoreConfig {
      * the durable record.
      */
     eventRetention?: number;
+    /**
+     * Synthetic-self Phase 9: self-scope memory. When true (effective default
+     * — the field's absence enables the loop), the plugin records first-person
+     * self_model episodes at session.idle and assembles a tiered identity block
+     * from accumulated self-dispositions. Gated on `!== false`, mirroring the
+     * established brain.reflex / brain.predictionError pattern.
+     */
+    selfModel?: boolean;
+    /**
+     * Phase 9: total token budget for the identity block (Tier 1 core +
+     * Tier 2 situational). Default 350. Validated [100, 1000].
+     */
+    identityTokens?: number;
   };
 }
 

@@ -354,7 +354,7 @@ export function createMcpTools(store: MemoryStore): McpToolHandler[] {
 // ---------------------------------------------------------------------------
 
 const SERVER_NAME = "realmemory";
-const SERVER_VERSION = "0.16.0";
+const SERVER_VERSION = "0.17.0";
 
 /**
  * Start the realmemory MCP server on stdio. Loads config (or accepts an

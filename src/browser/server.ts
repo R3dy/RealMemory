@@ -44,6 +44,7 @@ const MEMORY_TYPES: ReadonlySet<MemoryType> = new Set<MemoryType>([
   "lesson_learned",
   "session_summary",
   "contextual_note",
+  "self_model",
 ]);
 
 /**
@@ -211,7 +212,7 @@ async function handleRequest(
   }
 
   if (pathname === "/version") {
-    sendJson(res, 200, { version: "0.16.0" });
+    sendJson(res, 200, { version: "0.17.0" });
     return;
   }
 

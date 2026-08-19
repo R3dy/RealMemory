@@ -4,6 +4,7 @@ import { deriveProjectId } from "./project-id";
 import { classifyIntent, dynamicLimit, evaluateDelta } from "./brain-loop";
 import type { Intent, ToolCapture } from "./brain-loop";
 import { emit, flush, configureBrainEvents } from "./brain-events";
+import { recordSelfEpisode, assembleIdentity } from "./self";
 import {
   createProbeState,
   resetProbeForSession,
@@ -455,25 +456,44 @@ export default async function realmemoryPlugin(
             await log("info", `Auto-recalled ${results.length} memories for new session`);
           }
 
-          // ----- Synthetic-brain Phase 3: stage identity slot (sticky) -----
-          // Top global user_preference by weight. Set once at session start.
-          // Gated on brain.workingMemory (defaults true).
-          const brainConfigWM = state.config as { brain?: { workingMemory?: boolean } };
+          // ----- Synthetic-brain Phase 3 / Synthetic-self Phase 9: identity slot -----
+          // Phase 9: replaced the single-preference query with assembleIdentity,
+          // which returns a tiered block (Tier 1 self_model dispositions + Tier 2
+          // situational lessons). Falls back to the top user_preference when no
+          // self_model rows exist yet (backward compat). Set once at session start.
+          // Gated on brain.workingMemory (defaults true) + brain.selfModel (defaults true).
+          const brainConfigWM = state.config as {
+            brain?: { workingMemory?: boolean; selfModel?: boolean; identityTokens?: number };
+          };
           if (brainConfigWM.brain?.workingMemory !== false) {
             try {
-              const idResults = await store.search({
-                scope: "global",
-                types: ["user_preference"],
-                sortBy: "weight",
-                sortOrder: "desc",
-                limit: 1,
-              });
-              if (idResults.memories.length > 0) {
-                const m = idResults.memories[0];
-                state.workingMemory.identity = {
-                  content: m.content,
-                  memoryIds: [m.id],
-                };
+              if (brainConfigWM.brain?.selfModel !== false) {
+                // Phase 9: assemble the tiered identity block.
+                const identity = await assembleIdentity(store, {
+                  identityTokens: brainConfigWM.brain?.identityTokens,
+                });
+                if (identity.content) {
+                  state.workingMemory.identity = {
+                    content: identity.content,
+                    memoryIds: identity.memoryIds,
+                  };
+                }
+              } else {
+                // selfModel disabled — fall back to the Phase 3 single-preference query.
+                const idResults = await store.search({
+                  scope: "global",
+                  types: ["user_preference"],
+                  sortBy: "weight",
+                  sortOrder: "desc",
+                  limit: 1,
+                });
+                if (idResults.memories.length > 0) {
+                  const m = idResults.memories[0];
+                  state.workingMemory.identity = {
+                    content: m.content,
+                    memoryIds: [m.id],
+                  };
+                }
               }
             } catch {
               // Identity query failure is non-fatal — the slot stays empty.
@@ -630,6 +650,30 @@ export default async function realmemoryPlugin(
               state.lastToolCapture = null;
               // Synthetic-self Phase 8: flush the brain event ring (detached).
               await flush(store).catch(() => {});
+              // Synthetic-self Phase 9: record self-episodes from this session's
+              // state (overrides, high-surprise outcomes, corrections, tool mix).
+              // Detached — deliberative path (ADR-010). Gated on brain.selfModel.
+              try {
+                const selfCount = await recordSelfEpisode(store, {
+                  sessionId: state.sessionId ?? undefined,
+                  lastUserText: state.lastUserText,
+                  lastUserIntent: state.lastUserIntent,
+                  lastToolCapture: state.lastToolCapture,
+                  lastPredictionOutcome: state.lastPredictionOutcome,
+                  lastBlock: state.lastBlock,
+                  reflexCache: state.reflexCache
+                    ? { rules: state.reflexCache.rules, arousal: state.reflexCache.arousal }
+                    : null,
+                  injectedMemoryIds: state.injectedMemoryIds,
+                  lastInjectedMemoryIds: state.lastInjectedMemoryIds,
+                  config: state.config as { brain?: { selfModel?: boolean } },
+                });
+                if (selfCount > 0) {
+                  await log("debug", `Self-episode: recorded ${selfCount} self_model rows`);
+                }
+              } catch (selfErr) {
+                // Fire-safe — self-episodes must never break session.idle.
+              }
             })().catch((error) =>
               log(
                 "error",
