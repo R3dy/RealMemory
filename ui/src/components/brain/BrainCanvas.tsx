@@ -242,7 +242,7 @@ function Neurons({
         '#include <emissivemap_fragment>',
         `#include <emissivemap_fragment>
 #ifdef USE_COLOR
-  totalEmissiveRadiance *= vColor;
+  totalEmissiveRadiance *= vColor.rgb;
 #endif`,
       );
     };
@@ -865,6 +865,8 @@ function SceneContent({
   focusId,
   fireAt,
   booted,
+  colorMode,
+  regionMap,
   onHover,
   onSelect,
   data,

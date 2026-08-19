@@ -202,9 +202,11 @@ export function computeBrainLayout(nodes: Memory[], edges: GraphEdge[]): Positio
   }
 
   /* eslint-disable @typescript-eslint/no-explicit-any */
-  // numDimensions(3) is CRITICAL — d3-force-3d defaults to a 2D sim, which
-  // flattens the brain into a plane.
-  const sim = (forceSimulation(simNodes as never[]) as any).numDimensions(3)
+  // Pass numDimensions=3 as the SECOND ARG to forceSimulation — not .numDimensions(3)
+  // after. The constructor calls initializeNodes() which sets vz=0 only when nDim>2
+  // from the start. Calling .numDimensions(3) after construction re-initializes forces
+  // but NOT nodes, leaving vz=undefined → NaN propagates through all z-forces.
+  const sim = (forceSimulation(simNodes as never[], 3) as any)
     .force(
       'link',
       (forceLink as any)(links)

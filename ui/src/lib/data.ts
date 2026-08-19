@@ -814,7 +814,12 @@ export interface DataSourceInfo {
   loadedAt: string;
 }
 
-export const DEFAULT_API_BASE = 'http://127.0.0.1:9333';
+// Relative by default — fetches resolve against the page origin. This makes the
+// UI work regardless of how it's served: direct http://127.0.0.1:9333, the
+// Tailscale HTTPS proxy (https://host:8333 → 127.0.0.1:9333), or any other
+// reverse proxy. An absolute http:// default would be blocked as mixed content
+// when the page itself is served over HTTPS.
+export const DEFAULT_API_BASE = '';
 const LS_API_BASE = 'realmemory.apiBase';
 const LS_IMPORT = 'realmemory.import';
 const FETCH_TIMEOUT_MS = 1500;
@@ -1078,7 +1083,16 @@ function resolveApiBase(override?: string): string {
     if (q) return q.replace(/\/+$/, '');
   } catch { /* no window */ }
   const stored = lsGet(LS_API_BASE);
-  if (stored) return stored.replace(/\/+$/, '');
+  if (stored) {
+    // Mixed-content guard: a stale http:// base persisted from a prior
+    // localhost visit is blocked when the page is served over HTTPS (e.g. via
+    // the Tailscale proxy). Fall back to relative in that case.
+    if (stored.startsWith('http://') && window.location.protocol === 'https:') {
+      lsRemove(LS_API_BASE);
+      return DEFAULT_API_BASE;
+    }
+    return stored.replace(/\/+$/, '');
+  }
   return DEFAULT_API_BASE;
 }
 
