@@ -3070,6 +3070,35 @@ DEGRADED: the following always-fire hooks registered 0 fires despite
     }
   }
   if (report.degraded) return 2;
+  try {
+    const sixtySecondsAgo = new Date(Date.now() - 6e4).toISOString();
+    const recentEvents = await store.getBrainEvents(0, 1e3);
+    const eventsLastMin = recentEvents.filter(
+      (e) => e.recorded_at >= sixtySecondsAgo
+    ).length;
+    const totalEvents = recentEvents.length;
+    const metricsSummary = await store.getMetricSummary();
+    const recallHit = metricsSummary.find((m) => m.metric_name === "recall_hit");
+    const recallMiss = metricsSummary.find((m) => m.metric_name === "recall_miss");
+    const hitCount = recallHit?.count ?? 0;
+    const missCount = recallMiss?.count ?? 0;
+    const totalRecall = hitCount + missCount;
+    const recallHitRate = totalRecall > 0 ? hitCount / totalRecall : 0;
+    stdout.write("\n\u2500\u2500 event spine (synthetic-self Phase 8) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n");
+    stdout.write(`brain_events total:     ${totalEvents}
+`);
+    stdout.write(`events last 60s:        ${eventsLastMin}/min
+`);
+    stdout.write(`recall_hit_rate:        ${recallHitRate.toFixed(2)} (${hitCount} hits / ${missCount} misses)`);
+    if (totalRecall === 0) {
+      stdout.write(" \u2014 no recall data yet (run a session with injected memories)");
+    } else if (recallHitRate === 0 && missCount > 0) {
+      stdout.write(" \u2014 WARNING: recall_miss > 0 but recall_hit = 0 (dead-metric signature?)");
+    }
+    stdout.write("\n");
+    stdout.write("dropped/flush-lag:      plugin-process-only (see /brain LIVE badge)\n");
+  } catch {
+  }
   return 0;
 }
 

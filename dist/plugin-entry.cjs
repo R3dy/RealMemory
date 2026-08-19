@@ -3618,12 +3618,22 @@ async function realmemoryPlugin(ctx) {
           } catch {
           }
         })();
+        emit(
+          "reflex.override",
+          { memoryId: memId, tool: input.tool },
+          state.sessionId ?? void 0
+        );
         if (brainConfig.brain?.predictionError !== false) {
           const cache2 = state.reflexCache;
           const rule2 = cache2 && cache2.rules.length > 0 ? matchCall(cache2, { tool: input.tool, args: currentArgs }) : null;
           const prediction = predictOutcome(rule2);
           const callId = `${input.tool}:${hashArgs(currentArgs)}:${state.predictionCounter++}`;
           state.pendingPredictions.set(callId, prediction);
+          emit(
+            "predict.made",
+            { tool: input.tool, willSucceed: prediction.willSucceed, confidence: prediction.confidence, callId },
+            state.sessionId ?? void 0
+          );
         }
         return;
       }
@@ -3638,6 +3648,11 @@ async function realmemoryPlugin(ctx) {
           memoryId: rule.memoryId,
           confidence: rule.confidence
         };
+        emit(
+          "reflex.block",
+          { memoryId: rule.memoryId, tool: input.tool, note: rule.note },
+          state.sessionId ?? void 0
+        );
         void (async () => {
           try {
             const store = await getStore();
@@ -3653,6 +3668,11 @@ async function realmemoryPlugin(ctx) {
           const prediction = predictOutcome(rule);
           const callId = `${input.tool}:${hashArgs(currentArgs)}:${state.predictionCounter++}`;
           state.pendingPredictions.set(callId, prediction);
+          emit(
+            "predict.made",
+            { tool: input.tool, willSucceed: prediction.willSucceed, confidence: prediction.confidence, callId },
+            state.sessionId ?? void 0
+          );
         }
         throw new Error(blockMessage(rule));
       }
@@ -3661,6 +3681,11 @@ async function realmemoryPlugin(ctx) {
         const rewritten = rule.rewrite(origArgs);
         if (rewritten !== origArgs) {
           output.args = rewritten;
+          emit(
+            "reflex.rewrite",
+            { memoryId: rule.memoryId, tool: input.tool, note: rule.note },
+            state.sessionId ?? void 0
+          );
           void (async () => {
             try {
               const store = await getStore();
@@ -3675,6 +3700,11 @@ async function realmemoryPlugin(ctx) {
           state.pendingWarnNote = `[realmemory reflex] Rewrote args: ${rule.note}`;
         } else {
           state.pendingWarnNote = `[realmemory reflex] ${rule.note}`;
+          emit(
+            "reflex.fire",
+            { memoryId: rule.memoryId, tool: input.tool, note: rule.note, action: "warn-fallback" },
+            state.sessionId ?? void 0
+          );
           void (async () => {
             try {
               const store = await getStore();
@@ -3689,6 +3719,11 @@ async function realmemoryPlugin(ctx) {
         }
       } else if (action === "warn" && rule) {
         state.pendingWarnNote = `[realmemory reflex] ${rule.note}`;
+        emit(
+          "reflex.fire",
+          { memoryId: rule.memoryId, tool: input.tool, note: rule.note, action: "warn" },
+          state.sessionId ?? void 0
+        );
         void (async () => {
           try {
             const store = await getStore();
@@ -3705,6 +3740,11 @@ async function realmemoryPlugin(ctx) {
         const prediction = predictOutcome(rule);
         const callId = `${input.tool}:${hashArgs(input.args ?? output.args)}:${state.predictionCounter++}`;
         state.pendingPredictions.set(callId, prediction);
+        emit(
+          "predict.made",
+          { tool: input.tool, willSucceed: prediction.willSucceed, confidence: prediction.confidence, callId },
+          state.sessionId ?? void 0
+        );
       }
     },
     // On tool execution: auto-capture learnings (if enabled, default true) +
@@ -3738,6 +3778,11 @@ async function realmemoryPlugin(ctx) {
                   void store.maybeRelate(stored.id, stored.content, stored.type).catch(() => {
                   });
                 }
+                emit(
+                  "encode.stored",
+                  { memoryId: stored.id, type: "codebase_fact", tool: "read", filePath },
+                  state.sessionId ?? void 0
+                );
                 await log("debug", `Auto-captured codebase_fact for ${filePath}`);
                 state.lastToolCapture = {
                   tool: input.tool,
@@ -3768,6 +3813,11 @@ async function realmemoryPlugin(ctx) {
                   void store.maybeRelate(stored.id, stored.content, stored.type).catch(() => {
                   });
                 }
+                emit(
+                  "encode.stored",
+                  { memoryId: stored.id, type: "lesson_learned", tool: "bash", command },
+                  state.sessionId ?? void 0
+                );
                 await log("debug", "Auto-captured lesson_learned from bash error");
                 state.lastToolCapture = {
                   tool: input.tool,
@@ -3790,6 +3840,11 @@ async function realmemoryPlugin(ctx) {
               const actual = classifyOutcome(input.tool, output?.output, isErrorResult);
               const surprise = computeSurprise(prediction, actual);
               const bin = surpriseBin(surprise);
+              emit(
+                "predict.resolved",
+                { tool: input.tool, willSucceed: prediction.willSucceed, actualSuccess: actual.success, surprise, bin, callId },
+                state.sessionId ?? void 0
+              );
               await store.recordMetric(
                 `prediction_error:${bin}`,
                 1,
@@ -3817,6 +3872,11 @@ async function realmemoryPlugin(ctx) {
                   void store.maybeRelate(m.id, m.content, m.type).catch(() => {
                   });
                 }
+                emit(
+                  "encode.stored",
+                  { memoryId: m.id, type: "lesson_learned", tool: input.tool, surprise },
+                  state.sessionId ?? void 0
+                );
                 if (surprise > 0.7 && state.reflexCache) {
                   const newRule = compileRule(m);
                   if (newRule) addRule(state.reflexCache, newRule);
@@ -3825,6 +3885,11 @@ async function realmemoryPlugin(ctx) {
               } else if (prediction.sourceMemoryId) {
                 await store.update(prediction.sourceMemoryId, { reinforce: true }).catch(() => {
                 });
+                emit(
+                  "encode.reinforced",
+                  { memoryId: prediction.sourceMemoryId, tool: input.tool },
+                  state.sessionId ?? void 0
+                );
               }
               state.lastPredictionOutcome = {
                 prediction,
@@ -3852,6 +3917,11 @@ async function realmemoryPlugin(ctx) {
             `Auto-capture/prediction failed: ${error instanceof Error ? error.message : String(error)}`
           );
         }
+        try {
+          const flushStore = await getStore();
+          await flush(flushStore);
+        } catch {
+        }
       })();
     },
     // On user message: recall memories matching the message text, format them,
@@ -3878,6 +3948,11 @@ async function realmemoryPlugin(ctx) {
         recallLimit = dynamicLimit(intent);
         state.recentUserTexts.push(content);
         if (state.recentUserTexts.length > 5) state.recentUserTexts.shift();
+        emit(
+          "perceive.intent",
+          { intent, textSnippet: content.slice(0, 80) },
+          state.sessionId ?? void 0
+        );
       }
       const brainConfigPred = state.config;
       if (intent === "correction" && brainConfigPred.brain?.predictionError !== false && state.lastPredictionOutcome) {
@@ -4014,6 +4089,20 @@ async function realmemoryPlugin(ctx) {
         state.pendingWarnNote,
         { workingMemoryTokens: brainConfig.brain?.workingMemoryTokens }
       );
+      emit(
+        "wm.assembled",
+        {
+          delivered: formatted ? deliveredMemoryIds : [],
+          taskFrame: state.workingMemory.taskFrame.memoryIds,
+          queriedLessons: state.workingMemory.queriedLessons.memoryIds,
+          freshLessons: state.workingMemory.freshLessons.memoryIds,
+          openPredictions: state.workingMemory.openPredictions.memoryIds,
+          identity: state.workingMemory.identity?.memoryIds ?? [],
+          tokenBudget: brainConfig.brain?.workingMemoryTokens ?? 800,
+          deliveredThisTurn: formatted ? true : false
+        },
+        state.sessionId ?? void 0
+      );
       if (formatted) {
         output.system.push(formatted);
         state.lastInjectedMemoryIds = state.workingMemory.taskFrame.memoryIds.slice(-5);
@@ -4042,7 +4131,12 @@ async function realmemoryPlugin(ctx) {
           const store = await getStore();
           const config = state.config;
           const intervalHours = config.compactingIntervalHours ?? 4;
-          await store.maybeDecay("decay:compacting", intervalHours);
+          const decayRan = await store.maybeDecay("decay:compacting", intervalHours);
+          emit(
+            "decay.run",
+            { ran: decayRan, intervalHours },
+            state.sessionId ?? void 0
+          );
           await store.dedupPass();
           await store.recordMetric("memory_bloat_ratio", await store.getBloatRatio());
           const brainConfig = state.config;
@@ -4054,6 +4148,11 @@ async function realmemoryPlugin(ctx) {
             );
             if (rules > 0) {
               await store.recordMetric("schema_formation", rules);
+              emit(
+                "consolidate.cluster",
+                { rulesSynthesized: rules },
+                state.sessionId ?? void 0
+              );
             }
           }
         } catch (error) {
@@ -4061,6 +4160,11 @@ async function realmemoryPlugin(ctx) {
             "error",
             `Compacting hygiene failed: ${error instanceof Error ? error.message : String(error)}`
           );
+        }
+        try {
+          const flushStore = await getStore();
+          await flush(flushStore);
+        } catch {
         }
       })();
     },
