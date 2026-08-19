@@ -104,7 +104,7 @@ dependency count at three.
 |---|---|---|---|---|
 | **8. Event spine + honest telemetry** | Real brain events out of the plugin; the UI stops simulating; `recall_hit` becomes real | `src/brain-events.ts`, schema v5, `browser/server.ts`, all `/brain` panels | **on** | None — observation only. **Blocking prerequisite.** |
 | **9. Self-scope memory** | The agent stores facts about itself; identity block is assembled, not queried | `src/self.ts`, `types.ts`, `plugin.ts` | on | Low |
-| **10. Trait vector** | Temperament becomes persisted, drifting, bounded, auditable state | `src/traits.ts`, `meta` rows | opt-in | Medium — changes behavior |
+| **10. Trait vector** | Temperament becomes persisted, drifting, bounded, auditable state — **plus `--reset-self` and the twin harness, both ship gates** | `src/traits.ts`, `meta` rows, `bin.ts`, `scripts/twin/` | opt-in | Medium — changes behavior |
 | **11. Valence + persistent affect** | Mood survives the night and is domain-specific | `src/affect.ts`, `meta` rows | opt-in | Medium |
 | **12. Real abstraction + belief revision** | Episodes become rules that are actually more general; contradictions get resolved | `src/consolidate.ts` rewrite | on (structural) | Medium |
 | **13. Reflection (default mode)** | Something happens during silence | `src/reflect.ts` in the UI-server process | **off** | Medium — writes unattended |
@@ -246,8 +246,25 @@ explicitly in config. Only defaults drift.
 **Auditability:** every drift emits `trait.drift` and, when it crosses a 0.1 boundary, writes a
 `self_model` row — so "why are you like this?" has an answer in the store.
 
+**Two ship gates. Phase 10 does not land without both of them, and both ship first.**
+
+**Gate 1 — the reset lands before the drift.** `realmemory-mcp --reset-self
+[--traits|--affect|--identity|--all]` restores the affected state to baseline and records the reset
+as a `self_model` row. It is a direct consequence of Rule 2: state that cannot be reverted is a bug,
+and the first person to need this will be someone whose agent has drifted somewhere unhelpful mid-task.
+Build and test it against a synthetic drifted vector *before* the update rule is wired to anything.
+
+**Gate 2 — the twin harness lands with the drift.** Nothing from Phase 10 onward can be judged by a
+unit test; the only honest instrument is an **agent twin** — two installs against the same task
+stream, one with `traits` and `affect` frozen at baseline, compared on the existing metrics
+(`recall_hit_rate`, `duplicate_rate`, `memory_bloat_ratio`, `correction_retention`) over weeks. The
+harness is a task-stream replayer plus a metric differ; it does not need to be elaborate, it needs to
+exist. Without it, every phase after this one is unfalsifiable, and "the personality is working" is a
+vibe rather than a claim.
+
 **Eval.** Two installs driven by different task streams for two weeks must show measurably different
-trait vectors, and each delta must have a readable causal chain.
+trait vectors; each delta must have a readable causal chain; the twin comparison must show the
+drifting install is not *worse* than the frozen one on any of the four metrics.
 
 ---
 
@@ -348,8 +365,9 @@ A bounded controller reads `recall_hit_rate`, `duplicate_rate`, `memory_bloat_ra
 parameter at a time, held for K sessions, kept if the target metric improved, reverted otherwise.
 Every experiment is an event plus a memory: hypothesis, change, result, verdict.
 
-Default **off**. Ships with `realmemory-mcp --reset-self [--traits|--affect|--identity|--all]`,
-which is a hard requirement of Rule 2, not a nice-to-have.
+Default **off**. Controller-set parameters are covered by the `--reset-self` escape hatch shipped in
+Phase 10 (`--all` reverts them alongside traits and affect), and every experiment is judged on the
+twin harness from the same phase — a controller without a control group is just drift with paperwork.
 
 ---
 
@@ -543,14 +561,14 @@ All new keys default to current behavior, so upgrading is a no-op until opted in
 
 - **Trait drift can run away.** A caution loop ends as an agent that blocks everything. Mitigated by
   the `[0.15, 0.85]` clamp, decay toward baseline, α ≤ 0.02, per-session evaluation, and
-  `--reset-self`. Ship the reset before shipping the drift.
+  `--reset-self` — which is Phase 10's Gate 1 and lands before the update rule is wired to anything.
 - **The self can become confabulation.** Self-episodes are templated from measured state, never
   interpreted — the same discipline `buildContent` already enforces. The moment a self-fact comes
   from an LLM's characterization rather than a counter, it is fiction with provenance.
 - **Evaluation is the real bottleneck.** None of Phases 10–14 can be judged from a unit test. The
-  honest instrument is an **agent twin**: two installs, same task stream, one with traits and affect
-  frozen, compared on the existing metrics over weeks. Build the twin harness with Phase 10 or accept
-  that everything after it is unfalsifiable.
+  honest instrument is an **agent twin**, specified as Phase 10's Gate 2. If that gate is allowed to
+  slip, every phase after it is unfalsifiable — which is the most likely way this whole plan fails:
+  not by being wrong, but by becoming unmeasurable and therefore unarguable.
 - **Event volume in pathological sessions.** A runaway tool loop could flood the ring. Bounded ring +
   drop counter + retention cap means the failure mode is lost telemetry, never a stalled agent.
 - **The UI can lie in a new way.** A stale event tape rendering as live telemetry is exactly the
@@ -576,6 +594,11 @@ Phase 8 blocks everything. Phases 9 and 12 are independent of each other and can
 Phase 10 needs both 8 (honest metrics) and 9 (a place to record why traits moved). Phase 11 needs 9.
 Phase 13 needs 12 (there is nothing worth reflecting on without real abstraction). Phase 14 needs 10
 and honest metrics from 8.
+
+**Phase 10 has an internal order that is not negotiable:** `--reset-self` (Gate 1) → twin harness
+(Gate 2) → the trait update rule. Both gates are cheap; the drift they guard is the first change in
+this plan that alters behavior on evidence the user did not review. Shipping the drift first and the
+safety net "next sprint" is the failure this ordering exists to prevent.
 
 **If only one phase ships: Phase 8.** It makes the existing brain observable, fixes a dead metric,
 turns the best-looking page in the product from a simulation into an instrument, and is the
