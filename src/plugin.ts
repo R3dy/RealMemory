@@ -1184,9 +1184,14 @@ export default async function realmemoryPlugin(
         }
         // Synthetic-self Phase 8: flush the brain event ring after each tool
         // call (detached — this whole block runs detached per INV-017).
-        // `store` is scoped inside the try block above; re-acquire here (getStore is cached).
-        const flushStore = await getStore();
-        await flush(flushStore).catch(() => {});
+        // Fire-safe: getStore may throw on a bad path in test envs; the flush
+        // must never reject out of the detached block (unhandled rejection).
+        try {
+          const flushStore = await getStore();
+          await flush(flushStore);
+        } catch {
+          // Fire-safe — brain events are telemetry, never break the tool loop.
+        }
       })();
     },
 
@@ -1526,9 +1531,13 @@ export default async function realmemoryPlugin(
           );
         }
         // Synthetic-self Phase 8: flush the brain event ring after compaction hygiene (detached).
-        // `store` is scoped inside the try block above; re-acquire here (getStore is cached).
-        const flushStore = await getStore();
-        await flush(flushStore).catch(() => {});
+        // Fire-safe (same pattern as tool.execute.after flush).
+        try {
+          const flushStore = await getStore();
+          await flush(flushStore);
+        } catch {
+          // Fire-safe — brain events are telemetry.
+        }
       })();
     },
 

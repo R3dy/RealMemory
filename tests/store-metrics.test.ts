@@ -37,7 +37,7 @@ afterEach(() => {
 });
 
 describe("Schema v4 + metrics", () => {
-  it("applies v4 migration cleanly on a v3 DB", async () => {
+  it("applies v4 + v5 migrations cleanly on a v3 DB", async () => {
     // Build a DB that is exactly at schema version 3 (v1+v2+v3 applied).
     const dbPath = uniqueDbPath();
     const raw = await openRaw(dbPath);
@@ -49,7 +49,7 @@ describe("Schema v4 + metrics", () => {
     );
     raw.close();
 
-    // init() runs runMigrations, which should apply only version 4.
+    // init() runs runMigrations, which should apply versions 4 and 5.
     const store = new MemoryStore({ storagePath: dbPath, projectId: "test" });
     await store.init();
 
@@ -71,12 +71,20 @@ describe("Schema v4 + metrics", () => {
       "idx_metrics_recorded",
     ]);
 
+    // v5: brain_events table + indexes.
+    const brainTable = check
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='brain_events'",
+      )
+      .get() as { name?: string } | undefined;
+    expect(brainTable?.name).toBe("brain_events");
+
     const versions = (
       check
         .prepare("SELECT version FROM schema_version ORDER BY version")
         .all() as { version: number }[]
     ).map((r) => r.version);
-    expect(versions).toEqual([1, 2, 3, 4]);
+    expect(versions).toEqual([1, 2, 3, 4, 5]);
 
     check.close();
     await store.close();
