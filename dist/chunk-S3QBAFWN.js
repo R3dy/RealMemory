@@ -1,7 +1,7 @@
 import {
   MemoryStore,
   loadConfig
-} from "./chunk-K6MQZMEO.js";
+} from "./chunk-QRA66SYI.js";
 
 // src/mcp-server.ts
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -123,7 +123,7 @@ async function handleRequest(req, res, store, uiDir) {
     return;
   }
   if (pathname === "/version") {
-    sendJson(res, 200, { version: "0.14.0" });
+    sendJson(res, 200, { version: "0.16.0" });
     return;
   }
   if (pathname === "/api/stats") {
@@ -144,6 +144,15 @@ async function handleRequest(req, res, store, uiDir) {
     const since = url.searchParams.get("since") ?? void 0;
     const summary = await store.getMetricSummary(name, since);
     sendJson(res, 200, summary);
+    return;
+  }
+  if (pathname === "/api/brain/state") {
+    const snapshot = await store.getBrainStateSnapshot();
+    sendJson(res, 200, snapshot);
+    return;
+  }
+  if (pathname === "/api/stream") {
+    handleBrainStream(url, req, res, store);
     return;
   }
   const memoryMatch = pathname.match(/^\/api\/memory\/(.+)$/);
@@ -314,6 +323,71 @@ async function handleMemory(id, res, store) {
     }
     sendJson(res, 500, { error: message });
   }
+}
+function handleBrainStream(url, req, res, store) {
+  const afterParam = url.searchParams.get("after");
+  let after = 0;
+  if (afterParam !== null) {
+    const parsed = Number.parseInt(afterParam, 10);
+    if (!Number.isNaN(parsed) && parsed >= 0) after = parsed;
+  }
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+    // Disable Nagle for lower latency on localhost.
+    "X-Accel-Buffering": "no"
+  });
+  if (typeof res.flushHeaders === "function") res.flushHeaders();
+  let closed = false;
+  let heartbeatTimer;
+  let pollTimer;
+  const cleanup = () => {
+    if (closed) return;
+    closed = true;
+    clearInterval(pollTimer);
+    clearInterval(heartbeatTimer);
+    try {
+      res.end();
+    } catch {
+    }
+  };
+  req.on("close", cleanup);
+  req.on("error", cleanup);
+  heartbeatTimer = setInterval(() => {
+    if (closed) return;
+    try {
+      res.write(":heartbeat\n\n");
+    } catch {
+      cleanup();
+    }
+  }, 15e3);
+  pollTimer = setInterval(() => {
+    if (closed) return;
+    void (async () => {
+      try {
+        const rows = await store.getBrainEvents(after, 100);
+        if (rows.length === 0) return;
+        for (const row of rows) {
+          if (closed) return;
+          const data = row.payload || "{}";
+          const chunk = `event: ${row.kind}
+data: ${data}
+id: ${row.seq}
+
+`;
+          try {
+            res.write(chunk);
+          } catch {
+            cleanup();
+            return;
+          }
+          after = row.seq;
+        }
+      } catch {
+      }
+    })();
+  }, 250);
 }
 function sendJson(res, status, body) {
   const json = JSON.stringify(body);
@@ -599,7 +673,7 @@ function createMcpTools(store) {
   ];
 }
 var SERVER_NAME = "realmemory";
-var SERVER_VERSION = "0.13.0";
+var SERVER_VERSION = "0.16.0";
 async function startMcpServer(config, opts) {
   const mergedConfig = config ?? loadConfig();
   const ownLifecycle = opts?.ownLifecycle ?? false;

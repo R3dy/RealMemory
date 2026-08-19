@@ -163,7 +163,7 @@ describe("Phase 7: memory_note", () => {
     const tools = createMcpTools(store);
     const tool = tools.find((t) => t.name === "memory_note")!;
     const result = await tool.handler({
-      content: "Royce prefers concise recommendations",
+      content: "The user prefers concise recommendations",
       type: "user_preference",
     }) as { type: string };
 

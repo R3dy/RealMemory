@@ -35,10 +35,9 @@ const DOMAIN_MAP: [string, string][] = [
   ['anymake', 'anymake'],
   ['lambda', 'aws'],
   ['python', 'python'],
-  ['realhax', 'realhax'],
-  ['realvol', 'realvol'],
-  ['real-agent', 'opencode'],
-  ['mission-control', 'opencode'],
+  ['project-a', 'project-a'],
+  ['project-b', 'project-b'],
+  ['opencode', 'opencode'],
 ];
 
 function parseTags(raw: any): string[] {

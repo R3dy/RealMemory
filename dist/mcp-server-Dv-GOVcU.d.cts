@@ -1,5 +1,5 @@
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
-import { MemoryStoreConfig, StoreInput, Memory, MemoryWithRelations, ListQuery, ListResult, ForgetResult, RecallQuery, RecallResult, SearchQuery, SearchResult, RelationshipType, Relationship, MemoryType, UpdatePatch } from './types.js';
+import { MemoryStoreConfig, StoreInput, Memory, MemoryWithRelations, ListQuery, ListResult, ForgetResult, RecallQuery, RecallResult, SearchQuery, SearchResult, RelationshipType, Relationship, MemoryType, UpdatePatch } from './types.cjs';
 
 /**
  * Synthetic-brain Phase 6: schema formation (episodic-to-semantic consolidation).
@@ -312,6 +312,68 @@ declare class MemoryStore {
         session_id: string | null;
         recorded_at: string;
     }>>;
+    /**
+     * Insert a batch of brain events into the `brain_events` table (schema v5).
+     * Each event carries its own `emittedAt` timestamp (from the ring buffer)
+     * plus an optional `sessionId`. `payload` is JSON-stringified. Returns the
+     * number of rows inserted.
+     *
+     * This is the write side of the synthetic-self Phase 8 event spine. The
+     * plugin process emits into an in-RAM ring (zero I/O), then `flush()` calls
+     * this in a single batched INSERT from the deliberative path. The UI server
+     * process reads the same table concurrently (WAL mode) over SSE.
+     *
+     * (Synthetic-self Phase 8.)
+     */
+    insertBrainEvents(events: Array<{
+        kind: string;
+        payload: Record<string, unknown>;
+        emittedAt: string;
+        sessionId?: string;
+    }>): Promise<number>;
+    /**
+     * Cap the `brain_events` table: delete rows below `max(seq) - retention`.
+     * Called by `flush()` after each batched INSERT. Telemetry tape, not
+     * memory — bounded by design.
+     *
+     * (Synthetic-self Phase 8.)
+     */
+    capBrainEvents(retention: number): Promise<number>;
+    /**
+     * Read brain events with `seq > afterSeq`, ascending, limited. Used by the
+     * UI server's `GET /api/stream` SSE endpoint to tail the event tape.
+     *
+     * (Synthetic-self Phase 8.)
+     */
+    getBrainEvents(afterSeq: number, limit?: number): Promise<Array<{
+        seq: number;
+        session_id: string | null;
+        kind: string;
+        payload: string;
+        recorded_at: string;
+    }>>;
+    /**
+     * Reconstruct a brain-state snapshot from the event tape for the UI's
+     * `GET /api/brain/state` page-load endpoint. No shared RAM required —
+     * everything here is derived from `brain_events` + `memories`:
+     *   - `lastEventAt`: recorded_at of the most recent brain_event (or null)
+     *   - `liveVsStale`: "live" if last event < 30s ago, "stale" if > 5min, else "idle"
+     *   - `reflexRuleCount`: count of active `lesson_learned` memories above the
+     *     reflex weight floor (0.3) — the rules the reflex cache would load
+     *   - `lastArousal`: payload.arousal of the most recent `arousal.change` (or null)
+     *   - `lastWmAssembled`: payload of the most recent `wm.assembled` (or null)
+     *   - `eventCount`: total rows in `brain_events`
+     *
+     * (Synthetic-self Phase 8.)
+     */
+    getBrainStateSnapshot(): Promise<{
+        lastEventAt: string | null;
+        liveVsStale: "live" | "stale" | "idle" | "empty";
+        reflexRuleCount: number;
+        lastArousal: number | null;
+        lastWmAssembled: Record<string, unknown> | null;
+        eventCount: number;
+    }>;
     /**
      * Bloat ratio: fraction of active memories with weight below
      * archiveThreshold. 0.0 on an empty store.

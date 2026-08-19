@@ -121,7 +121,7 @@ For each candidate, decide:
 | Field | Guidance |
 |-------|----------|
 | `type` | `user_preference` (corrections, stated wants) · `task_pattern` (worked approaches, reproducible flows) · `codebase_fact` (non-obvious discoveries, decisions+rationale) · `lesson_learned` (hard-won: assumed/reality/lesson) · `session_summary` (what happened) · `contextual_note` (developing theories, half-formed insights, observations) |
-| `domain` | The primary tech/topic: `aws`, `testing`, `opencode`, `anymake`, `terraform`, `vercel`, plus project names (`realhax`, `realvol`, `realcode`, `basecamp`, `realmemory`). Use `meta` for cognition-about-memory. |
+| `domain` | The primary tech/topic: `aws`, `testing`, `react`, `postgres`, `cli`, `auth`, etc. Use the project name if project-specific. Use `meta` for cognition-about-memory. |
 | `category` | For lessons: `gotcha`, `cost`, `safety`, `process`, `tooling`, `integration`, `performance`. Other types may leave null. |
 | `weight` | Pain that cost real $/time → high (0.9-0.97). Verified codebase fact → medium (0.6-0.8). User preference stated once → medium (0.5-0.7). Developing theory → low (0.3-0.5). The script's `cost` field is a proxy: a $5 session likely produced a high-weight lesson. |
 | `confidence` | Verified by reproduction / multiple sessions → 0.95-0.97. Stated by user → 0.8-0.9. Inferred once → 0.5-0.6. A theory → 0.4-0.5. |
@@ -182,7 +182,7 @@ BOOTSTRAP COMPLETE
 - Don't store a session_summary for every session — only the high-value ones (major work, hard-won lessons, turning points).
 - Don't process sessions linearly by date — process by `cost` desc (the script sorts this way).
 - Don't skip the recall-before-store step even when you're "sure" it's new — semantic recall catches near-duplicates your phrasing missed.
-- Don't hardcode project-specific memories as `global` scope unless they truly generalize (AWS gotchas: global; realhax PHASE_STATE: project).
+- Don't hardcode project-specific memories as `global` scope unless they truly generalize (AWS gotchas: global; project-specific state: project).
 - Don't try to process all 1614 sessions in one run. The methodology is repeatable; do a high-value subset now, note the remainder for follow-up.
 
 ## Making it repeatable (for any realmemory user)

@@ -18,7 +18,7 @@
 //   node scripts/discover-history.mjs --min-cost 0.5      # only sessions with cost >= 0.5
 //   node scripts/discover-history.mjs --since 1720000000  # only sessions after unix ts
 //   node scripts/discover-history.mjs --limit 500         # cap sessions in catalog
-//   node scripts/discover-history.mjs --hub ~/mission-control
+//   node scripts/discover-history.mjs --hub ~/my-projects
 //   node scripts/discover-history.mjs --db ~/.local/share/opencode/opencode.db
 //
 // Requires: Node 18+ and EITHER better-sqlite3 (auto-detected from realmemory's
@@ -53,7 +53,7 @@ for (let i = 2; i < argv.length; i++) {
 }
 
 const home = homedir();
-const HUB = args.hub || join(home, "mission-control");
+const HUB = args.hub || join(home, "projects");
 const DB_PATH = args.db || join(home, ".local", "share", "opencode", "opencode.db");
 const OUT = args.out || null;
 const SESSION_ID = args.session || null;

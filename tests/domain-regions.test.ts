@@ -29,15 +29,15 @@ describe('BRAIN_REGIONS', () => {
 describe('computeDomainRegionMap', () => {
   it('assigns the top-count domain to region 0', () => {
     const nodes = [
-      { id: '1', domain: 'realvol' },
-      { id: '2', domain: 'realvol' },
-      { id: '3', domain: 'realvol' },
+      { id: '1', domain: 'react' },
+      { id: '2', domain: 'react' },
+      { id: '3', domain: 'react' },
       { id: '4', domain: 'aws' },
       { id: '5', domain: 'aws' },
       { id: '6', domain: 'opencode' },
     ];
     const map = computeDomainRegionMap(nodes);
-    expect(map.get('realvol')).toBe(0); // 3 count → region 0 (Left Frontal)
+    expect(map.get('react')).toBe(0); // 3 count → region 0 (Left Frontal)
     expect(map.get('aws')).toBe(1);     // 2 count → region 1
     expect(map.get('opencode')).toBe(2); // 1 count → region 2
   });
@@ -64,43 +64,43 @@ describe('computeDomainRegionMap', () => {
 
   it('excludes undefined-domain memories from the map', () => {
     const nodes = [
-      { id: '1', domain: 'realvol' },
+      { id: '1', domain: 'react' },
       { id: '2', domain: undefined },
       { id: '3' }, // no domain field
     ];
     const map = computeDomainRegionMap(nodes);
     expect(map.size).toBe(1);
-    expect(map.has('realvol')).toBe(true);
+    expect(map.has('react')).toBe(true);
   });
 
   it('is deterministic (same input → same output)', () => {
     const nodes = [
-      { id: '1', domain: 'realvol' },
-      { id: '2', domain: 'realhax' },
-      { id: '3', domain: 'realvol' },
+      { id: '1', domain: 'react' },
+      { id: '2', domain: 'aws' },
+      { id: '3', domain: 'react' },
     ];
     const a = computeDomainRegionMap(nodes);
     const b = computeDomainRegionMap([...nodes].reverse());
-    // realvol (count 2) → region 0 in both; realhax (count 1) → region 1 in both
-    expect(a.get('realvol')).toBe(b.get('realvol'));
-    expect(a.get('realhax')).toBe(b.get('realhax'));
+    // react (count 2) → region 0 in both; aws (count 1) → region 1 in both
+    expect(a.get('react')).toBe(b.get('react'));
+    expect(a.get('aws')).toBe(b.get('aws'));
   });
 });
 
 describe('regionIndexFor', () => {
   it('returns the mapped region for a memory with a domain', () => {
-    const map = new Map([['realvol', 0]]);
-    expect(regionIndexFor({ id: '1', domain: 'realvol' }, map)).toBe(0);
+    const map = new Map([['react', 0]]);
+    expect(regionIndexFor({ id: '1', domain: 'react' }, map)).toBe(0);
   });
 
   it('returns UNASSIGNED_REGION_INDEX for undefined-domain memories', () => {
-    const map = new Map([['realvol', 0]]);
+    const map = new Map([['react', 0]]);
     expect(regionIndexFor({ id: '1', domain: undefined }, map)).toBe(UNASSIGNED_REGION_INDEX);
     expect(regionIndexFor({ id: '1' }, map)).toBe(UNASSIGNED_REGION_INDEX);
   });
 
   it('returns UNASSIGNED_REGION_INDEX for a domain not in the map', () => {
-    const map = new Map([['realvol', 0]]);
+    const map = new Map([['react', 0]]);
     expect(regionIndexFor({ id: '1', domain: 'unknown' }, map)).toBe(UNASSIGNED_REGION_INDEX);
   });
 

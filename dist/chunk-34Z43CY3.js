@@ -1,6 +1,6 @@
 import {
   generateUlid
-} from "./chunk-K6MQZMEO.js";
+} from "./chunk-QRA66SYI.js";
 
 // src/hook-probe.ts
 var ALWAYS_FIRE_HOOKS = [
@@ -156,7 +156,7 @@ Fallback delivery path:
   1. Ensure the realmemory MCP server is registered in your OpenCode config
      (it exposes the \`recall\` and \`store_memory\` tools \u2014 the agent can call
      them directly, bypassing the transform hook).
-  2. Add this line to your project's AGENTS.md (or the mission-control
+  2. Add this line to your project's AGENTS.md (or the
      MEMORY.md convention):
 
        At session start and before any non-trivial task, call the realmemory

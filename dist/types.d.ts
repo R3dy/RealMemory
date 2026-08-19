@@ -32,7 +32,7 @@ type MemoryCategory = "gotcha" | "cost" | "safety" | "integration" | "process" |
  * and retroactively by migration for older memories.
  */
 interface MemorySource {
-    /** Which project this memory originated from (e.g. "realhax", "realvol"). */
+    /** Which project this memory originated from (e.g. "my-app", "cli-tool"). */
     project?: string;
     /** The session that created or captured this memory, if known. */
     session?: string;
@@ -401,6 +401,24 @@ interface MemoryStoreConfig {
          * Validated integer >= 2.
          */
         schemaFormationMinCluster?: number;
+        /**
+         * Synthetic-self Phase 8: brain event spine. When true (effective default
+         * — the field's absence enables emission), the plugin emits brain events
+         * (reflex fires, predictions, working-memory assembly, encodes,
+         * consolidation, decay, arousal) into an in-RAM ring and flushes them to
+         * the `brain_events` SQLite table. The UI server tails that table over
+         * SSE so the `/brain` page renders real activity. Gated on `!== false`,
+         * mirroring the established brain.reflex / brain.predictionError pattern.
+         * Observation-only — no gate touched, no behavior change.
+         */
+        events?: boolean;
+        /**
+         * Phase 8: retention cap for the `brain_events` telemetry tape. Each
+         * flush deletes rows below `max(seq) - eventRetention`. Default 20000.
+         * Validated integer >= 1000. Telemetry, not memory — `memories` stays
+         * the durable record.
+         */
+        eventRetention?: number;
     };
 }
 /**

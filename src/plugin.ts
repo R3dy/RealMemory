@@ -3,6 +3,7 @@ import { loadConfig } from "./config";
 import { deriveProjectId } from "./project-id";
 import { classifyIntent, dynamicLimit, evaluateDelta } from "./brain-loop";
 import type { Intent, ToolCapture } from "./brain-loop";
+import { emit, flush, configureBrainEvents } from "./brain-events";
 import {
   createProbeState,
   resetProbeForSession,
@@ -504,6 +505,17 @@ export default async function realmemoryPlugin(
           ),
         );
 
+        // ----- Synthetic-self Phase 8: configure brain event spine -----
+        // Observation-only. emit() self-gates on ring.enabled (brain.events !== false).
+        // Configured once here so the gates + retention are set before any emit.
+        const brainEventsCfg = state.config as {
+          brain?: { events?: boolean; eventRetention?: number };
+        };
+        configureBrainEvents({
+          enabled: brainEventsCfg.brain?.events !== false,
+          retention: brainEventsCfg.brain?.eventRetention ?? 20000,
+        });
+
         // ----- Synthetic-brain Phase 1: build ReflexCache (detached) -----
         // Gated on brain.reflex (defaults true). Cold cache = no inhibition = safe.
         if ((state.config as { brain?: { reflex?: boolean } }).brain?.reflex !== false) {
@@ -539,6 +551,12 @@ export default async function realmemoryPlugin(
         });
         if (state.reflexCache) {
           state.reflexCache.arousal = computeArousal(state.arousalTracker);
+          // Synthetic-self Phase 8: emit arousal.change (observation-only).
+          emit(
+            "arousal.change",
+            { arousal: state.reflexCache.arousal },
+            state.sessionId ?? undefined,
+          );
         }
 
         // Synthetic-brain Phase 2: leak prevention. Pending predictions that
@@ -577,14 +595,41 @@ export default async function realmemoryPlugin(
           } else {
             void (async () => {
               const store = await getStore();
+              // Synthetic-self Phase 8 (Story A51.2): fix dead recall_hit_rate.
+              // Previously passed assistantText="" making recall_hit unreachable
+              // (brain-loop.ts always recorded recall_miss). Now fetch the real
+              // last assistant text from the session transcript so the overlap
+              // test in evaluateDelta can fire. fetchSessionTranscript already
+              // exists (line 264) and is already called at idle for the sentinel.
+              let assistantText = "";
+              const idleSid2 = (event as { properties?: { sessionID?: string } })?.properties?.sessionID;
+              if (idleSid2) {
+                try {
+                  const transcript = await fetchSessionTranscript(ctx, idleSid2);
+                  if (transcript) {
+                    // Extract the last assistant line ("assistant: ...").
+                    const lines = transcript.split("\n");
+                    for (let i = lines.length - 1; i >= 0; i--) {
+                      if (lines[i]!.startsWith("assistant:")) {
+                        assistantText = lines[i]!.slice("assistant:".length).trim();
+                        break;
+                      }
+                    }
+                  }
+                } catch {
+                  // Transcript fetch failure is non-fatal — recall_hit degrades to recall_miss (correct behavior).
+                }
+              }
               await evaluateDelta(
                 store,
                 state as unknown as import("./brain-loop").BrainLoopState,
                 state.lastUserText ?? "",
-                "",
+                assistantText,
               );
               // C2 fix: clear lastToolCapture AFTER evaluateDelta completes.
               state.lastToolCapture = null;
+              // Synthetic-self Phase 8: flush the brain event ring (detached).
+              await flush(store).catch(() => {});
             })().catch((error) =>
               log(
                 "error",
@@ -728,6 +773,12 @@ export default async function realmemoryPlugin(
             // Fire-safe.
           }
         })();
+        // Synthetic-self Phase 8: emit reflex.override (observation-only).
+        emit(
+          "reflex.override",
+          { memoryId: memId, tool: input.tool },
+          state.sessionId ?? undefined,
+        );
 
         // Skip inhibition (decideAction NOT called). Still run predict+stash
         // (the retried call is real — tool.execute.after will classify it).
@@ -740,6 +791,12 @@ export default async function realmemoryPlugin(
           const prediction = predictOutcome(rule);
           const callId = `${input.tool}:${hashArgs(currentArgs)}:${state.predictionCounter++}`;
           state.pendingPredictions.set(callId, prediction);
+          // Synthetic-self Phase 8: emit predict.made (observation-only).
+          emit(
+            "predict.made",
+            { tool: input.tool, willSucceed: prediction.willSucceed, confidence: prediction.confidence, callId },
+            state.sessionId ?? undefined,
+          );
         }
         return; // call proceeds without inhibition
       }
@@ -770,6 +827,12 @@ export default async function realmemoryPlugin(
           memoryId: rule.memoryId,
           confidence: rule.confidence,
         };
+        // Synthetic-self Phase 8: emit reflex.block (observation-only, before throw).
+        emit(
+          "reflex.block",
+          { memoryId: rule.memoryId, tool: input.tool, note: rule.note },
+          state.sessionId ?? undefined,
+        );
         void (async () => {
           try {
             const store = await getStore();
@@ -789,6 +852,11 @@ export default async function realmemoryPlugin(
           const prediction = predictOutcome(rule);
           const callId = `${input.tool}:${hashArgs(currentArgs)}:${state.predictionCounter++}`;
           state.pendingPredictions.set(callId, prediction);
+          emit(
+            "predict.made",
+            { tool: input.tool, willSucceed: prediction.willSucceed, confidence: prediction.confidence, callId },
+            state.sessionId ?? undefined,
+          );
         }
         throw new Error(blockMessage(rule));
       }
@@ -800,6 +868,12 @@ export default async function realmemoryPlugin(
         if (rewritten !== origArgs) {
           // The rewrite fn changed the args — apply the mutation.
           output.args = rewritten;
+          // Synthetic-self Phase 8: emit reflex.rewrite (observation-only).
+          emit(
+            "reflex.rewrite",
+            { memoryId: rule.memoryId, tool: input.tool, note: rule.note },
+            state.sessionId ?? undefined,
+          );
           void (async () => {
             try {
               const store = await getStore();
@@ -816,6 +890,11 @@ export default async function realmemoryPlugin(
         } else {
           // Rewrite was a no-op (from not present — R1-N6). Fall back to warn.
           state.pendingWarnNote = `[realmemory reflex] ${rule.note}`;
+          emit(
+            "reflex.fire",
+            { memoryId: rule.memoryId, tool: input.tool, note: rule.note, action: "warn-fallback" },
+            state.sessionId ?? undefined,
+          );
           void (async () => {
             try {
               const store = await getStore();
@@ -832,6 +911,12 @@ export default async function realmemoryPlugin(
       } else if (action === "warn" && rule) {
         // Warn: today's Phase 1 behavior (regression-free).
         state.pendingWarnNote = `[realmemory reflex] ${rule.note}`;
+        // Synthetic-self Phase 8: emit reflex.fire (observation-only).
+        emit(
+          "reflex.fire",
+          { memoryId: rule.memoryId, tool: input.tool, note: rule.note, action: "warn" },
+          state.sessionId ?? undefined,
+        );
         void (async () => {
           try {
             const store = await getStore();
@@ -856,6 +941,12 @@ export default async function realmemoryPlugin(
         const prediction = predictOutcome(rule); // null-safe
         const callId = `${input.tool}:${hashArgs(input.args ?? output.args)}:${state.predictionCounter++}`;
         state.pendingPredictions.set(callId, prediction);
+        // Synthetic-self Phase 8: emit predict.made (normal path — observation-only).
+        emit(
+          "predict.made",
+          { tool: input.tool, willSucceed: prediction.willSucceed, confidence: prediction.confidence, callId },
+          state.sessionId ?? undefined,
+        );
       }
     },
 
@@ -914,6 +1005,12 @@ export default async function realmemoryPlugin(
                 if ((state.config as { autoRelate?: boolean }).autoRelate !== false) {
                   void store.maybeRelate(stored.id, stored.content, stored.type).catch(() => {});
                 }
+                // Synthetic-self Phase 8: emit encode.stored (observation-only).
+                emit(
+                  "encode.stored",
+                  { memoryId: stored.id, type: "codebase_fact", tool: "read", filePath },
+                  state.sessionId ?? undefined,
+                );
                 await log("debug", `Auto-captured codebase_fact for ${filePath}`);
                 // Brain-loop capture: remember the tool outcome this turn so
                 // classifyIntent can see it on the next user message.
@@ -947,6 +1044,12 @@ export default async function realmemoryPlugin(
                 if ((state.config as { autoRelate?: boolean }).autoRelate !== false) {
                   void store.maybeRelate(stored.id, stored.content, stored.type).catch(() => {});
                 }
+                // Synthetic-self Phase 8: emit encode.stored (bash error, observation-only).
+                emit(
+                  "encode.stored",
+                  { memoryId: stored.id, type: "lesson_learned", tool: "bash", command },
+                  state.sessionId ?? undefined,
+                );
                 await log("debug", "Auto-captured lesson_learned from bash error");
                 // Brain-loop capture: remember the tool outcome this turn so
                 // classifyIntent can see it on the next user message.
@@ -980,6 +1083,12 @@ export default async function realmemoryPlugin(
               const actual = classifyOutcome(input.tool, output?.output, isErrorResult);
               const surprise = computeSurprise(prediction, actual);
               const bin = surpriseBin(surprise);
+              // Synthetic-self Phase 8: emit predict.resolved (observation-only).
+              emit(
+                "predict.resolved",
+                { tool: input.tool, willSucceed: prediction.willSucceed, actualSuccess: actual.success, surprise, bin, callId },
+                state.sessionId ?? undefined,
+              );
               await store.recordMetric(
                 `prediction_error:${bin}`,
                 1,
@@ -1009,6 +1118,12 @@ export default async function realmemoryPlugin(
                 if ((state.config as { autoRelate?: boolean }).autoRelate !== false) {
                   void store.maybeRelate(m.id, m.content, m.type).catch(() => {});
                 }
+                // Synthetic-self Phase 8: emit encode.stored (prediction-error encode, observation-only).
+                emit(
+                  "encode.stored",
+                  { memoryId: m.id, type: "lesson_learned", tool: input.tool, surprise },
+                  state.sessionId ?? undefined,
+                );
                 // Strong surprise → immediate reflex on the next call.
                 if (surprise > 0.7 && state.reflexCache) {
                   const newRule = compileRule(m);
@@ -1021,6 +1136,12 @@ export default async function realmemoryPlugin(
                 await store
                   .update(prediction.sourceMemoryId, { reinforce: true })
                   .catch(() => {});
+                // Synthetic-self Phase 8: emit encode.reinforced (observation-only).
+                emit(
+                  "encode.reinforced",
+                  { memoryId: prediction.sourceMemoryId, tool: input.tool },
+                  state.sessionId ?? undefined,
+                );
               }
 
               // C3: record the outcome for the next turn's correction path.
@@ -1061,6 +1182,11 @@ export default async function realmemoryPlugin(
             `Auto-capture/prediction failed: ${error instanceof Error ? error.message : String(error)}`,
           );
         }
+        // Synthetic-self Phase 8: flush the brain event ring after each tool
+        // call (detached — this whole block runs detached per INV-017).
+        // `store` is scoped inside the try block above; re-acquire here (getStore is cached).
+        const flushStore = await getStore();
+        await flush(flushStore).catch(() => {});
       })();
     },
 
@@ -1100,6 +1226,12 @@ export default async function realmemoryPlugin(
         // C4 fix: classify FIRST (check if in buffer), THEN push.
         state.recentUserTexts.push(content);
         if (state.recentUserTexts.length > 5) state.recentUserTexts.shift();
+        // Synthetic-self Phase 8: emit perceive.intent (observation-only).
+        emit(
+          "perceive.intent",
+          { intent, textSnippet: content.slice(0, 80) },
+          state.sessionId ?? undefined,
+        );
       }
 
       // ----- Synthetic-brain Phase 2: user correction via lastPredictionOutcome -----
@@ -1284,6 +1416,24 @@ export default async function realmemoryPlugin(
         { workingMemoryTokens: brainConfig.brain?.workingMemoryTokens },
       );
 
+      // Synthetic-self Phase 8: emit wm.assembled (observation-only).
+      // Payload: slot memory IDs + token budget + slot occupancy, so the UI's
+      // WorkingMemoryWindow panel can render real slot contents against the 800 budget.
+      emit(
+        "wm.assembled",
+        {
+          delivered: formatted ? deliveredMemoryIds : [],
+          taskFrame: state.workingMemory.taskFrame.memoryIds,
+          queriedLessons: state.workingMemory.queriedLessons.memoryIds,
+          freshLessons: state.workingMemory.freshLessons.memoryIds,
+          openPredictions: state.workingMemory.openPredictions.memoryIds,
+          identity: state.workingMemory.identity?.memoryIds ?? [],
+          tokenBudget: brainConfig.brain?.workingMemoryTokens ?? 800,
+          deliveredThisTurn: formatted ? true : false,
+        },
+        state.sessionId ?? undefined,
+      );
+
       if (formatted) {
         output.system.push(formatted);
         // C3 fix: set lastInjectedMemoryIds from taskFrame IDs ONLY (not the union
@@ -1335,7 +1485,13 @@ export default async function realmemoryPlugin(
           const config = state.config as { compactingIntervalHours?: number };
           const intervalHours = config.compactingIntervalHours ?? 4;
           // Rate-limited decay check (separate from session.created's decay:lastRun).
-          await store.maybeDecay("decay:compacting", intervalHours);
+          const decayRan = await store.maybeDecay("decay:compacting", intervalHours);
+          // Synthetic-self Phase 8: emit decay.run (observation-only).
+          emit(
+            "decay.run",
+            { ran: decayRan, intervalHours },
+            state.sessionId ?? undefined,
+          );
           // Always run dedupPass (it's bounded and idempotent).
           await store.dedupPass();
           // If maybeDecay didn't run (rate-limited), still record bloat ratio.
@@ -1355,6 +1511,12 @@ export default async function realmemoryPlugin(
             );
             if (rules > 0) {
               await store.recordMetric("schema_formation", rules);
+              // Synthetic-self Phase 8: emit consolidate.cluster (observation-only).
+              emit(
+                "consolidate.cluster",
+                { rulesSynthesized: rules },
+                state.sessionId ?? undefined,
+              );
             }
           }
         } catch (error) {
@@ -1363,6 +1525,10 @@ export default async function realmemoryPlugin(
             `Compacting hygiene failed: ${error instanceof Error ? error.message : String(error)}`,
           );
         }
+        // Synthetic-self Phase 8: flush the brain event ring after compaction hygiene (detached).
+        // `store` is scoped inside the try block above; re-acquire here (getStore is cached).
+        const flushStore = await getStore();
+        await flush(flushStore).catch(() => {});
       })();
     },
 

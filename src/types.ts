@@ -55,7 +55,7 @@ export type MemoryCategory =
  * and retroactively by migration for older memories.
  */
 export interface MemorySource {
-  /** Which project this memory originated from (e.g. "realhax", "realvol"). */
+  /** Which project this memory originated from (e.g. "my-app", "cli-tool"). */
   project?: string;
   /** The session that created or captured this memory, if known. */
   session?: string;

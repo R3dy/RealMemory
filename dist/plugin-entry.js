@@ -6,7 +6,7 @@ import {
   recordLandsOutcome,
   resetProbeForSession,
   resolveHostVersion
-} from "./chunk-2N5IPEKP.js";
+} from "./chunk-34Z43CY3.js";
 import {
   classifyIntent,
   deriveProjectId,
@@ -16,8 +16,123 @@ import {
 import {
   MemoryStore,
   loadConfig
-} from "./chunk-K6MQZMEO.js";
+} from "./chunk-QRA66SYI.js";
 import "./chunk-B5S5KXU7.js";
+
+// src/brain-events.ts
+var BRAIN_EVENT_KINDS = [
+  "perceive.intent",
+  "reflex.fire",
+  "reflex.rewrite",
+  "reflex.block",
+  "reflex.override",
+  "predict.made",
+  "predict.resolved",
+  "wm.assembled",
+  "encode.stored",
+  "encode.reinforced",
+  "consolidate.cluster",
+  "decay.run",
+  "arousal.change"
+];
+var KIND_SET = new Set(BRAIN_EVENT_KINDS);
+var ring = null;
+var RING_CAPACITY = 512;
+var MAX_LAG_SAMPLES = 128;
+function configureBrainEvents(opts) {
+  const capacity = opts.capacity ?? RING_CAPACITY;
+  if (!ring) {
+    ring = {
+      buf: new Array(capacity),
+      head: 0,
+      count: 0,
+      dropped: 0,
+      lastFlushAt: 0,
+      flushLags: [],
+      enabled: opts.enabled,
+      retention: opts.retention,
+      seq: 0
+    };
+    return;
+  }
+  ring.enabled = opts.enabled;
+  ring.retention = opts.retention;
+  if (ring.buf.length !== capacity) {
+    const preserved = drainRingUnsafe(ring).slice(0, capacity);
+    ring.buf = new Array(capacity);
+    for (let i = 0; i < preserved.length; i++) ring.buf[i] = preserved[i];
+    ring.head = 0;
+    ring.count = preserved.length;
+  }
+}
+function emit(kind, payload = {}, sessionId) {
+  if (!ring || !ring.enabled) return false;
+  if (!KIND_SET.has(kind)) {
+    console.error(`[realmemory] brain-events: unknown kind "${kind}" (dropped)`);
+    return false;
+  }
+  const event = {
+    kind,
+    payload,
+    emittedAt: (/* @__PURE__ */ new Date()).toISOString(),
+    sessionId
+  };
+  if (ring.count < ring.buf.length) {
+    ring.buf[(ring.head + ring.count) % ring.buf.length] = event;
+    ring.count++;
+  } else {
+    ring.buf[ring.head] = event;
+    ring.head = (ring.head + 1) % ring.buf.length;
+    ring.dropped++;
+  }
+  ring.seq++;
+  return true;
+}
+function drainRingUnsafe(r) {
+  const out = [];
+  for (let i = 0; i < r.count; i++) {
+    out.push(r.buf[(r.head + i) % r.buf.length]);
+  }
+  r.head = 0;
+  r.count = 0;
+  return out;
+}
+async function flush(store) {
+  if (!ring || !ring.enabled || ring.count === 0) return 0;
+  const events = drainRingUnsafe(ring);
+  if (events.length === 0) return 0;
+  let lag = 0;
+  try {
+    const oldestMs = Date.parse(events[0].emittedAt);
+    if (!Number.isNaN(oldestMs)) lag = Date.now() - oldestMs;
+  } catch {
+  }
+  try {
+    const inserted = await store.insertBrainEvents(events);
+    if (ring.retention > 0) {
+      await store.capBrainEvents(ring.retention);
+    }
+    ring.lastFlushAt = Date.now();
+    ring.flushLags.push(lag);
+    if (ring.flushLags.length > MAX_LAG_SAMPLES) ring.flushLags.shift();
+    return inserted;
+  } catch (err) {
+    console.error(
+      `[realmemory] brain-events flush failed: ${err instanceof Error ? err.message : String(err)} (re-buffering ${events.length} events)`
+    );
+    for (const e of events) {
+      if (ring.count < ring.buf.length) {
+        ring.buf[(ring.head + ring.count) % ring.buf.length] = e;
+        ring.count++;
+      } else {
+        ring.buf[ring.head] = e;
+        ring.head = (ring.head + 1) % ring.buf.length;
+        ring.dropped++;
+      }
+    }
+    return 0;
+  }
+}
 
 // src/reflex.ts
 var REFLEX_WEIGHT_FLOOR = 0.3;
@@ -814,6 +929,11 @@ async function realmemoryPlugin(ctx) {
             `Memory decay failed: ${error instanceof Error ? error.message : String(error)}`
           )
         );
+        const brainEventsCfg = state.config;
+        configureBrainEvents({
+          enabled: brainEventsCfg.brain?.events !== false,
+          retention: brainEventsCfg.brain?.eventRetention ?? 2e4
+        });
         if (state.config.brain?.reflex !== false) {
           void (async () => {
             try {
@@ -838,6 +958,11 @@ async function realmemoryPlugin(ctx) {
         });
         if (state.reflexCache) {
           state.reflexCache.arousal = computeArousal(state.arousalTracker);
+          emit(
+            "arousal.change",
+            { arousal: state.reflexCache.arousal },
+            state.sessionId ?? void 0
+          );
         }
         state.pendingPredictions.clear();
         state.lastPredictionOutcome = null;
@@ -865,13 +990,32 @@ async function realmemoryPlugin(ctx) {
           } else {
             void (async () => {
               const store = await getStore();
+              let assistantText = "";
+              const idleSid2 = event?.properties?.sessionID;
+              if (idleSid2) {
+                try {
+                  const transcript = await fetchSessionTranscript(ctx, idleSid2);
+                  if (transcript) {
+                    const lines = transcript.split("\n");
+                    for (let i = lines.length - 1; i >= 0; i--) {
+                      if (lines[i].startsWith("assistant:")) {
+                        assistantText = lines[i].slice("assistant:".length).trim();
+                        break;
+                      }
+                    }
+                  }
+                } catch {
+                }
+              }
               await evaluateDelta(
                 store,
                 state,
                 state.lastUserText ?? "",
-                ""
+                assistantText
               );
               state.lastToolCapture = null;
+              await flush(store).catch(() => {
+              });
             })().catch(
               (error) => log(
                 "error",

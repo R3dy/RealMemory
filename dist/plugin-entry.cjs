@@ -386,11 +386,23 @@ CREATE TABLE IF NOT EXISTS metrics (
 CREATE INDEX IF NOT EXISTS idx_metrics_name ON metrics(metric_name);
 CREATE INDEX IF NOT EXISTS idx_metrics_recorded ON metrics(recorded_at);
 `;
+var SCHEMA_V5 = `
+CREATE TABLE IF NOT EXISTS brain_events (
+  seq         INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id  TEXT,
+  kind        TEXT NOT NULL,
+  payload     TEXT NOT NULL DEFAULT '{}',
+  recorded_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_brain_events_seq  ON brain_events(seq);
+CREATE INDEX IF NOT EXISTS idx_brain_events_kind ON brain_events(kind);
+`;
 var MIGRATIONS = {
   1: SCHEMA_V1,
   2: SCHEMA_V2,
   3: SCHEMA_V3,
-  4: SCHEMA_V4
+  4: SCHEMA_V4,
+  5: SCHEMA_V5
 };
 function runMigrations(db) {
   db.exec(`CREATE TABLE IF NOT EXISTS schema_version (
@@ -621,6 +633,14 @@ function validateConfig(config) {
   if (config.brain?.workingMemoryTokens !== void 0) {
     if (typeof config.brain.workingMemoryTokens !== "number" || config.brain.workingMemoryTokens < 200 || config.brain.workingMemoryTokens > 4e3) {
       throw new Error("brain.workingMemoryTokens must be a number in [200, 4000]");
+    }
+  }
+  if (config.brain?.events !== void 0 && typeof config.brain.events !== "boolean") {
+    throw new Error("brain.events must be a boolean");
+  }
+  if (config.brain?.eventRetention !== void 0) {
+    if (!Number.isInteger(config.brain.eventRetention) || config.brain.eventRetention < 1e3) {
+      throw new Error("brain.eventRetention must be an integer >= 1000");
     }
   }
 }
@@ -1980,6 +2000,147 @@ var MemoryStore = class {
     return rows;
   }
   /**
+   * Insert a batch of brain events into the `brain_events` table (schema v5).
+   * Each event carries its own `emittedAt` timestamp (from the ring buffer)
+   * plus an optional `sessionId`. `payload` is JSON-stringified. Returns the
+   * number of rows inserted.
+   *
+   * This is the write side of the synthetic-self Phase 8 event spine. The
+   * plugin process emits into an in-RAM ring (zero I/O), then `flush()` calls
+   * this in a single batched INSERT from the deliberative path. The UI server
+   * process reads the same table concurrently (WAL mode) over SSE.
+   *
+   * (Synthetic-self Phase 8.)
+   */
+  async insertBrainEvents(events) {
+    if (!this.db || events.length === 0) return 0;
+    try {
+      const stmt = this.db.prepare(
+        "INSERT INTO brain_events (session_id, kind, payload, recorded_at) VALUES (?, ?, ?, ?)"
+      );
+      let inserted = 0;
+      for (const e of events) {
+        stmt.run(
+          e.sessionId ?? null,
+          e.kind,
+          JSON.stringify(e.payload),
+          e.emittedAt
+        );
+        inserted++;
+      }
+      return inserted;
+    } catch {
+      return 0;
+    }
+  }
+  /**
+   * Cap the `brain_events` table: delete rows below `max(seq) - retention`.
+   * Called by `flush()` after each batched INSERT. Telemetry tape, not
+   * memory — bounded by design.
+   *
+   * (Synthetic-self Phase 8.)
+   */
+  async capBrainEvents(retention) {
+    if (!this.db || retention <= 0) return 0;
+    try {
+      const maxRow = this.db.prepare("SELECT MAX(seq) as m FROM brain_events").get();
+      const maxSeq = maxRow?.m ?? 0;
+      if (maxSeq <= retention) return 0;
+      const cutoff = maxSeq - retention;
+      const info = this.db.prepare("DELETE FROM brain_events WHERE seq < ?").run(cutoff);
+      return info.changes ?? 0;
+    } catch {
+      return 0;
+    }
+  }
+  /**
+   * Read brain events with `seq > afterSeq`, ascending, limited. Used by the
+   * UI server's `GET /api/stream` SSE endpoint to tail the event tape.
+   *
+   * (Synthetic-self Phase 8.)
+   */
+  async getBrainEvents(afterSeq, limit = 100) {
+    if (!this.db) return [];
+    const rows = this.db.prepare(
+      "SELECT seq, session_id, kind, payload, recorded_at FROM brain_events WHERE seq > ? ORDER BY seq ASC LIMIT ?"
+    ).all(afterSeq, limit);
+    return rows;
+  }
+  /**
+   * Reconstruct a brain-state snapshot from the event tape for the UI's
+   * `GET /api/brain/state` page-load endpoint. No shared RAM required —
+   * everything here is derived from `brain_events` + `memories`:
+   *   - `lastEventAt`: recorded_at of the most recent brain_event (or null)
+   *   - `liveVsStale`: "live" if last event < 30s ago, "stale" if > 5min, else "idle"
+   *   - `reflexRuleCount`: count of active `lesson_learned` memories above the
+   *     reflex weight floor (0.3) — the rules the reflex cache would load
+   *   - `lastArousal`: payload.arousal of the most recent `arousal.change` (or null)
+   *   - `lastWmAssembled`: payload of the most recent `wm.assembled` (or null)
+   *   - `eventCount`: total rows in `brain_events`
+   *
+   * (Synthetic-self Phase 8.)
+   */
+  async getBrainStateSnapshot() {
+    if (!this.db) {
+      return {
+        lastEventAt: null,
+        liveVsStale: "empty",
+        reflexRuleCount: 0,
+        lastArousal: null,
+        lastWmAssembled: null,
+        eventCount: 0
+      };
+    }
+    const lastRow = this.db.prepare(
+      "SELECT recorded_at FROM brain_events ORDER BY seq DESC LIMIT 1"
+    ).get();
+    const countRow = this.db.prepare("SELECT COUNT(*) as c FROM brain_events").get();
+    const eventCount = countRow?.c ?? 0;
+    let liveVsStale = "empty";
+    let lastEventAt = null;
+    if (lastRow?.recorded_at) {
+      lastEventAt = lastRow.recorded_at;
+      const ms = Date.now() - Date.parse(lastRow.recorded_at);
+      if (!Number.isNaN(ms)) {
+        if (ms < 3e4) liveVsStale = "live";
+        else if (ms > 5 * 6e4) liveVsStale = "stale";
+        else liveVsStale = "idle";
+      }
+    }
+    const ruleRow = this.db.prepare(
+      "SELECT COUNT(*) as c FROM memories WHERE status = 'active' AND type = 'lesson_learned' AND weight >= 0.3"
+    ).get();
+    let lastArousal = null;
+    const arousalRow = this.db.prepare(
+      "SELECT payload FROM brain_events WHERE kind = 'arousal.change' ORDER BY seq DESC LIMIT 1"
+    ).get();
+    if (arousalRow?.payload) {
+      try {
+        const p = JSON.parse(arousalRow.payload);
+        if (typeof p.arousal === "number") lastArousal = p.arousal;
+      } catch {
+      }
+    }
+    let lastWmAssembled = null;
+    const wmRow = this.db.prepare(
+      "SELECT payload FROM brain_events WHERE kind = 'wm.assembled' ORDER BY seq DESC LIMIT 1"
+    ).get();
+    if (wmRow?.payload) {
+      try {
+        lastWmAssembled = JSON.parse(wmRow.payload);
+      } catch {
+      }
+    }
+    return {
+      lastEventAt,
+      liveVsStale,
+      reflexRuleCount: ruleRow?.c ?? 0,
+      lastArousal,
+      lastWmAssembled,
+      eventCount
+    };
+  }
+  /**
    * Bloat ratio: fraction of active memories with weight below
    * archiveThreshold. 0.0 on an empty store.
    */
@@ -2201,6 +2362,121 @@ async function evaluateDelta(store, state, userText, assistantText) {
     } else {
       await store.recordMetric("recall_miss", 1);
     }
+  }
+}
+
+// src/brain-events.ts
+var BRAIN_EVENT_KINDS = [
+  "perceive.intent",
+  "reflex.fire",
+  "reflex.rewrite",
+  "reflex.block",
+  "reflex.override",
+  "predict.made",
+  "predict.resolved",
+  "wm.assembled",
+  "encode.stored",
+  "encode.reinforced",
+  "consolidate.cluster",
+  "decay.run",
+  "arousal.change"
+];
+var KIND_SET = new Set(BRAIN_EVENT_KINDS);
+var ring = null;
+var RING_CAPACITY = 512;
+var MAX_LAG_SAMPLES = 128;
+function configureBrainEvents(opts) {
+  const capacity = opts.capacity ?? RING_CAPACITY;
+  if (!ring) {
+    ring = {
+      buf: new Array(capacity),
+      head: 0,
+      count: 0,
+      dropped: 0,
+      lastFlushAt: 0,
+      flushLags: [],
+      enabled: opts.enabled,
+      retention: opts.retention,
+      seq: 0
+    };
+    return;
+  }
+  ring.enabled = opts.enabled;
+  ring.retention = opts.retention;
+  if (ring.buf.length !== capacity) {
+    const preserved = drainRingUnsafe(ring).slice(0, capacity);
+    ring.buf = new Array(capacity);
+    for (let i = 0; i < preserved.length; i++) ring.buf[i] = preserved[i];
+    ring.head = 0;
+    ring.count = preserved.length;
+  }
+}
+function emit(kind, payload = {}, sessionId) {
+  if (!ring || !ring.enabled) return false;
+  if (!KIND_SET.has(kind)) {
+    console.error(`[realmemory] brain-events: unknown kind "${kind}" (dropped)`);
+    return false;
+  }
+  const event = {
+    kind,
+    payload,
+    emittedAt: (/* @__PURE__ */ new Date()).toISOString(),
+    sessionId
+  };
+  if (ring.count < ring.buf.length) {
+    ring.buf[(ring.head + ring.count) % ring.buf.length] = event;
+    ring.count++;
+  } else {
+    ring.buf[ring.head] = event;
+    ring.head = (ring.head + 1) % ring.buf.length;
+    ring.dropped++;
+  }
+  ring.seq++;
+  return true;
+}
+function drainRingUnsafe(r) {
+  const out = [];
+  for (let i = 0; i < r.count; i++) {
+    out.push(r.buf[(r.head + i) % r.buf.length]);
+  }
+  r.head = 0;
+  r.count = 0;
+  return out;
+}
+async function flush(store) {
+  if (!ring || !ring.enabled || ring.count === 0) return 0;
+  const events = drainRingUnsafe(ring);
+  if (events.length === 0) return 0;
+  let lag = 0;
+  try {
+    const oldestMs = Date.parse(events[0].emittedAt);
+    if (!Number.isNaN(oldestMs)) lag = Date.now() - oldestMs;
+  } catch {
+  }
+  try {
+    const inserted = await store.insertBrainEvents(events);
+    if (ring.retention > 0) {
+      await store.capBrainEvents(ring.retention);
+    }
+    ring.lastFlushAt = Date.now();
+    ring.flushLags.push(lag);
+    if (ring.flushLags.length > MAX_LAG_SAMPLES) ring.flushLags.shift();
+    return inserted;
+  } catch (err) {
+    console.error(
+      `[realmemory] brain-events flush failed: ${err instanceof Error ? err.message : String(err)} (re-buffering ${events.length} events)`
+    );
+    for (const e of events) {
+      if (ring.count < ring.buf.length) {
+        ring.buf[(ring.head + ring.count) % ring.buf.length] = e;
+        ring.count++;
+      } else {
+        ring.buf[ring.head] = e;
+        ring.head = (ring.head + 1) % ring.buf.length;
+        ring.dropped++;
+      }
+    }
+    return 0;
   }
 }
 
@@ -3146,6 +3422,11 @@ async function realmemoryPlugin(ctx) {
             `Memory decay failed: ${error instanceof Error ? error.message : String(error)}`
           )
         );
+        const brainEventsCfg = state.config;
+        configureBrainEvents({
+          enabled: brainEventsCfg.brain?.events !== false,
+          retention: brainEventsCfg.brain?.eventRetention ?? 2e4
+        });
         if (state.config.brain?.reflex !== false) {
           void (async () => {
             try {
@@ -3170,6 +3451,11 @@ async function realmemoryPlugin(ctx) {
         });
         if (state.reflexCache) {
           state.reflexCache.arousal = computeArousal(state.arousalTracker);
+          emit(
+            "arousal.change",
+            { arousal: state.reflexCache.arousal },
+            state.sessionId ?? void 0
+          );
         }
         state.pendingPredictions.clear();
         state.lastPredictionOutcome = null;
@@ -3197,13 +3483,32 @@ async function realmemoryPlugin(ctx) {
           } else {
             void (async () => {
               const store = await getStore();
+              let assistantText = "";
+              const idleSid2 = event?.properties?.sessionID;
+              if (idleSid2) {
+                try {
+                  const transcript = await fetchSessionTranscript(ctx, idleSid2);
+                  if (transcript) {
+                    const lines = transcript.split("\n");
+                    for (let i = lines.length - 1; i >= 0; i--) {
+                      if (lines[i].startsWith("assistant:")) {
+                        assistantText = lines[i].slice("assistant:".length).trim();
+                        break;
+                      }
+                    }
+                  }
+                } catch {
+                }
+              }
               await evaluateDelta(
                 store,
                 state,
                 state.lastUserText ?? "",
-                ""
+                assistantText
               );
               state.lastToolCapture = null;
+              await flush(store).catch(() => {
+              });
             })().catch(
               (error) => log(
                 "error",

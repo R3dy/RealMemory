@@ -316,7 +316,7 @@ function buildPrompt(transcript, sessionMeta) {
     '- "content": a non-empty, self-contained string (third person, no pronouns needing context).',
     '  2-4 sentences. Specific enough to be useful. Generalized where possible.',
     '- "type": one of: user_preference, task_pattern, codebase_fact, lesson_learned, session_summary, contextual_note',
-    '- "domain": the primary tech/topic (e.g. "aws", "testing", "opencode", "realvol", "realhax", "anymake", "vercel").',
+    '- "domain": the primary tech/topic (e.g. "aws", "testing", "react", "postgres").',
     '  Use the project name if project-specific.',
     '- "category": for lessons: gotcha, cost, safety, integration, process, tooling, performance. null for other types.',
     '- "confidence": 0 to 1 (how sure you are this is worth keeping).',

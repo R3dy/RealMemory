@@ -2,14 +2,14 @@
 import {
   startBrowserServer,
   startMcpServer
-} from "./chunk-7NCBX4FW.js";
+} from "./chunk-S3QBAFWN.js";
 import {
   printDoctorTable
-} from "./chunk-2N5IPEKP.js";
+} from "./chunk-34Z43CY3.js";
 import {
   MemoryStore,
   loadConfig
-} from "./chunk-K6MQZMEO.js";
+} from "./chunk-QRA66SYI.js";
 import "./chunk-B5S5KXU7.js";
 
 // src/bin.ts

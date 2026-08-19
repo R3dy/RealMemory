@@ -276,11 +276,23 @@ CREATE TABLE IF NOT EXISTS metrics (
 CREATE INDEX IF NOT EXISTS idx_metrics_name ON metrics(metric_name);
 CREATE INDEX IF NOT EXISTS idx_metrics_recorded ON metrics(recorded_at);
 `;
+var SCHEMA_V5 = `
+CREATE TABLE IF NOT EXISTS brain_events (
+  seq         INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id  TEXT,
+  kind        TEXT NOT NULL,
+  payload     TEXT NOT NULL DEFAULT '{}',
+  recorded_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_brain_events_seq  ON brain_events(seq);
+CREATE INDEX IF NOT EXISTS idx_brain_events_kind ON brain_events(kind);
+`;
 var MIGRATIONS = {
   1: SCHEMA_V1,
   2: SCHEMA_V2,
   3: SCHEMA_V3,
-  4: SCHEMA_V4
+  4: SCHEMA_V4,
+  5: SCHEMA_V5
 };
 function runMigrations(db) {
   db.exec(`CREATE TABLE IF NOT EXISTS schema_version (
@@ -511,6 +523,14 @@ function validateConfig(config) {
   if (config.brain?.workingMemoryTokens !== void 0) {
     if (typeof config.brain.workingMemoryTokens !== "number" || config.brain.workingMemoryTokens < 200 || config.brain.workingMemoryTokens > 4e3) {
       throw new Error("brain.workingMemoryTokens must be a number in [200, 4000]");
+    }
+  }
+  if (config.brain?.events !== void 0 && typeof config.brain.events !== "boolean") {
+    throw new Error("brain.events must be a boolean");
+  }
+  if (config.brain?.eventRetention !== void 0) {
+    if (!Number.isInteger(config.brain.eventRetention) || config.brain.eventRetention < 1e3) {
+      throw new Error("brain.eventRetention must be an integer >= 1000");
     }
   }
 }
@@ -1894,6 +1914,147 @@ var MemoryStore = class {
     return rows;
   }
   /**
+   * Insert a batch of brain events into the `brain_events` table (schema v5).
+   * Each event carries its own `emittedAt` timestamp (from the ring buffer)
+   * plus an optional `sessionId`. `payload` is JSON-stringified. Returns the
+   * number of rows inserted.
+   *
+   * This is the write side of the synthetic-self Phase 8 event spine. The
+   * plugin process emits into an in-RAM ring (zero I/O), then `flush()` calls
+   * this in a single batched INSERT from the deliberative path. The UI server
+   * process reads the same table concurrently (WAL mode) over SSE.
+   *
+   * (Synthetic-self Phase 8.)
+   */
+  async insertBrainEvents(events) {
+    if (!this.db || events.length === 0) return 0;
+    try {
+      const stmt = this.db.prepare(
+        "INSERT INTO brain_events (session_id, kind, payload, recorded_at) VALUES (?, ?, ?, ?)"
+      );
+      let inserted = 0;
+      for (const e of events) {
+        stmt.run(
+          e.sessionId ?? null,
+          e.kind,
+          JSON.stringify(e.payload),
+          e.emittedAt
+        );
+        inserted++;
+      }
+      return inserted;
+    } catch {
+      return 0;
+    }
+  }
+  /**
+   * Cap the `brain_events` table: delete rows below `max(seq) - retention`.
+   * Called by `flush()` after each batched INSERT. Telemetry tape, not
+   * memory — bounded by design.
+   *
+   * (Synthetic-self Phase 8.)
+   */
+  async capBrainEvents(retention) {
+    if (!this.db || retention <= 0) return 0;
+    try {
+      const maxRow = this.db.prepare("SELECT MAX(seq) as m FROM brain_events").get();
+      const maxSeq = maxRow?.m ?? 0;
+      if (maxSeq <= retention) return 0;
+      const cutoff = maxSeq - retention;
+      const info = this.db.prepare("DELETE FROM brain_events WHERE seq < ?").run(cutoff);
+      return info.changes ?? 0;
+    } catch {
+      return 0;
+    }
+  }
+  /**
+   * Read brain events with `seq > afterSeq`, ascending, limited. Used by the
+   * UI server's `GET /api/stream` SSE endpoint to tail the event tape.
+   *
+   * (Synthetic-self Phase 8.)
+   */
+  async getBrainEvents(afterSeq, limit = 100) {
+    if (!this.db) return [];
+    const rows = this.db.prepare(
+      "SELECT seq, session_id, kind, payload, recorded_at FROM brain_events WHERE seq > ? ORDER BY seq ASC LIMIT ?"
+    ).all(afterSeq, limit);
+    return rows;
+  }
+  /**
+   * Reconstruct a brain-state snapshot from the event tape for the UI's
+   * `GET /api/brain/state` page-load endpoint. No shared RAM required —
+   * everything here is derived from `brain_events` + `memories`:
+   *   - `lastEventAt`: recorded_at of the most recent brain_event (or null)
+   *   - `liveVsStale`: "live" if last event < 30s ago, "stale" if > 5min, else "idle"
+   *   - `reflexRuleCount`: count of active `lesson_learned` memories above the
+   *     reflex weight floor (0.3) — the rules the reflex cache would load
+   *   - `lastArousal`: payload.arousal of the most recent `arousal.change` (or null)
+   *   - `lastWmAssembled`: payload of the most recent `wm.assembled` (or null)
+   *   - `eventCount`: total rows in `brain_events`
+   *
+   * (Synthetic-self Phase 8.)
+   */
+  async getBrainStateSnapshot() {
+    if (!this.db) {
+      return {
+        lastEventAt: null,
+        liveVsStale: "empty",
+        reflexRuleCount: 0,
+        lastArousal: null,
+        lastWmAssembled: null,
+        eventCount: 0
+      };
+    }
+    const lastRow = this.db.prepare(
+      "SELECT recorded_at FROM brain_events ORDER BY seq DESC LIMIT 1"
+    ).get();
+    const countRow = this.db.prepare("SELECT COUNT(*) as c FROM brain_events").get();
+    const eventCount = countRow?.c ?? 0;
+    let liveVsStale = "empty";
+    let lastEventAt = null;
+    if (lastRow?.recorded_at) {
+      lastEventAt = lastRow.recorded_at;
+      const ms = Date.now() - Date.parse(lastRow.recorded_at);
+      if (!Number.isNaN(ms)) {
+        if (ms < 3e4) liveVsStale = "live";
+        else if (ms > 5 * 6e4) liveVsStale = "stale";
+        else liveVsStale = "idle";
+      }
+    }
+    const ruleRow = this.db.prepare(
+      "SELECT COUNT(*) as c FROM memories WHERE status = 'active' AND type = 'lesson_learned' AND weight >= 0.3"
+    ).get();
+    let lastArousal = null;
+    const arousalRow = this.db.prepare(
+      "SELECT payload FROM brain_events WHERE kind = 'arousal.change' ORDER BY seq DESC LIMIT 1"
+    ).get();
+    if (arousalRow?.payload) {
+      try {
+        const p = JSON.parse(arousalRow.payload);
+        if (typeof p.arousal === "number") lastArousal = p.arousal;
+      } catch {
+      }
+    }
+    let lastWmAssembled = null;
+    const wmRow = this.db.prepare(
+      "SELECT payload FROM brain_events WHERE kind = 'wm.assembled' ORDER BY seq DESC LIMIT 1"
+    ).get();
+    if (wmRow?.payload) {
+      try {
+        lastWmAssembled = JSON.parse(wmRow.payload);
+      } catch {
+      }
+    }
+    return {
+      lastEventAt,
+      liveVsStale,
+      reflexRuleCount: ruleRow?.c ?? 0,
+      lastArousal,
+      lastWmAssembled,
+      eventCount
+    };
+  }
+  /**
    * Bloat ratio: fraction of active memories with weight below
    * archiveThreshold. 0.0 on an empty store.
    */
@@ -2131,7 +2292,7 @@ async function handleRequest(req, res, store, uiDir) {
     return;
   }
   if (pathname === "/version") {
-    sendJson(res, 200, { version: "0.14.0" });
+    sendJson(res, 200, { version: "0.16.0" });
     return;
   }
   if (pathname === "/api/stats") {
@@ -2152,6 +2313,15 @@ async function handleRequest(req, res, store, uiDir) {
     const since = url.searchParams.get("since") ?? void 0;
     const summary = await store.getMetricSummary(name, since);
     sendJson(res, 200, summary);
+    return;
+  }
+  if (pathname === "/api/brain/state") {
+    const snapshot = await store.getBrainStateSnapshot();
+    sendJson(res, 200, snapshot);
+    return;
+  }
+  if (pathname === "/api/stream") {
+    handleBrainStream(url, req, res, store);
     return;
   }
   const memoryMatch = pathname.match(/^\/api\/memory\/(.+)$/);
@@ -2322,6 +2492,71 @@ async function handleMemory(id, res, store) {
     }
     sendJson(res, 500, { error: message });
   }
+}
+function handleBrainStream(url, req, res, store) {
+  const afterParam = url.searchParams.get("after");
+  let after = 0;
+  if (afterParam !== null) {
+    const parsed = Number.parseInt(afterParam, 10);
+    if (!Number.isNaN(parsed) && parsed >= 0) after = parsed;
+  }
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+    // Disable Nagle for lower latency on localhost.
+    "X-Accel-Buffering": "no"
+  });
+  if (typeof res.flushHeaders === "function") res.flushHeaders();
+  let closed = false;
+  let heartbeatTimer;
+  let pollTimer;
+  const cleanup = () => {
+    if (closed) return;
+    closed = true;
+    clearInterval(pollTimer);
+    clearInterval(heartbeatTimer);
+    try {
+      res.end();
+    } catch {
+    }
+  };
+  req.on("close", cleanup);
+  req.on("error", cleanup);
+  heartbeatTimer = setInterval(() => {
+    if (closed) return;
+    try {
+      res.write(":heartbeat\n\n");
+    } catch {
+      cleanup();
+    }
+  }, 15e3);
+  pollTimer = setInterval(() => {
+    if (closed) return;
+    void (async () => {
+      try {
+        const rows = await store.getBrainEvents(after, 100);
+        if (rows.length === 0) return;
+        for (const row of rows) {
+          if (closed) return;
+          const data = row.payload || "{}";
+          const chunk = `event: ${row.kind}
+data: ${data}
+id: ${row.seq}
+
+`;
+          try {
+            res.write(chunk);
+          } catch {
+            cleanup();
+            return;
+          }
+          after = row.seq;
+        }
+      } catch {
+      }
+    })();
+  }, 250);
 }
 function sendJson(res, status, body) {
   const json = JSON.stringify(body);
@@ -2607,7 +2842,7 @@ function createMcpTools(store) {
   ];
 }
 var SERVER_NAME = "realmemory";
-var SERVER_VERSION = "0.13.0";
+var SERVER_VERSION = "0.16.0";
 async function startMcpServer(config, opts) {
   const mergedConfig = config ?? loadConfig();
   const ownLifecycle = opts?.ownLifecycle ?? false;
