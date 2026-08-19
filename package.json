@@ -53,7 +53,7 @@
   "scripts": {
     "build:ui": "cd ui && npm install && npm run build",
     "build": "npm run build:ui && tsup",
-    "prepare": "npm run build",
+    "prepublishOnly": "npm run build",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "lint": "eslint ."
