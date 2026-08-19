@@ -444,6 +444,24 @@ export interface MemoryStoreConfig {
      * Validated integer >= 2.
      */
     schemaFormationMinCluster?: number;
+    /**
+     * Synthetic-self Phase 8: brain event spine. When true (effective default
+     * — the field's absence enables emission), the plugin emits brain events
+     * (reflex fires, predictions, working-memory assembly, encodes,
+     * consolidation, decay, arousal) into an in-RAM ring and flushes them to
+     * the `brain_events` SQLite table. The UI server tails that table over
+     * SSE so the `/brain` page renders real activity. Gated on `!== false`,
+     * mirroring the established brain.reflex / brain.predictionError pattern.
+     * Observation-only — no gate touched, no behavior change.
+     */
+    events?: boolean;
+    /**
+     * Phase 8: retention cap for the `brain_events` telemetry tape. Each
+     * flush deletes rows below `max(seq) - eventRetention`. Default 20000.
+     * Validated integer >= 1000. Telemetry, not memory — `memories` stays
+     * the durable record.
+     */
+    eventRetention?: number;
   };
 }
 

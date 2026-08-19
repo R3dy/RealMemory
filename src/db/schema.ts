@@ -140,7 +140,36 @@ CREATE INDEX IF NOT EXISTS idx_metrics_name ON metrics(metric_name);
 CREATE INDEX IF NOT EXISTS idx_metrics_recorded ON metrics(recorded_at);
 `;
 
-export const CURRENT_SCHEMA_VERSION = 4;
+/**
+ * Schema version 5 — adds the `brain_events` table (synthetic-self Phase 8).
+ *
+ * The brain_events table is an append-only telemetry tape for the synthetic
+ * brain: the plugin process emits brain events (reflex fires, predictions,
+ * working-memory assembly, encodes, consolidation, decay, arousal) into an
+ * in-RAM ring buffer, then flushes them here in detached batches. The web UI
+ * server (a separate process) tails this table over SSE so the `/brain` page
+ * stops simulating.
+ *
+ * The table is capped: each flush deletes rows below `max(seq) - eventRetention`
+ * (default 20 000). This is telemetry, not memory — `memories` stays the
+ * durable record. WAL mode (already relied on by the graph browser) permits
+ * the UI server to read concurrently with plugin writes.
+ *
+ * See `docs/architecture/synthetic-self.md` §4 Phase 8 for the full design.
+ */
+export const SCHEMA_V5 = `
+CREATE TABLE IF NOT EXISTS brain_events (
+  seq         INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id  TEXT,
+  kind        TEXT NOT NULL,
+  payload     TEXT NOT NULL DEFAULT '{}',
+  recorded_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_brain_events_seq  ON brain_events(seq);
+CREATE INDEX IF NOT EXISTS idx_brain_events_kind ON brain_events(kind);
+`;
+
+export const CURRENT_SCHEMA_VERSION = 5;
 
 /**
  * Migrations map: version -> SQL to apply.
@@ -151,6 +180,7 @@ const MIGRATIONS: Record<number, string> = {
   2: SCHEMA_V2,
   3: SCHEMA_V3,
   4: SCHEMA_V4,
+  5: SCHEMA_V5,
 };
 
 /**

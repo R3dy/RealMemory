@@ -1929,6 +1929,206 @@ export class MemoryStore {
   }
 
   /**
+   * Insert a batch of brain events into the `brain_events` table (schema v5).
+   * Each event carries its own `emittedAt` timestamp (from the ring buffer)
+   * plus an optional `sessionId`. `payload` is JSON-stringified. Returns the
+   * number of rows inserted.
+   *
+   * This is the write side of the synthetic-self Phase 8 event spine. The
+   * plugin process emits into an in-RAM ring (zero I/O), then `flush()` calls
+   * this in a single batched INSERT from the deliberative path. The UI server
+   * process reads the same table concurrently (WAL mode) over SSE.
+   *
+   * (Synthetic-self Phase 8.)
+   */
+  async insertBrainEvents(
+    events: Array<{
+      kind: string;
+      payload: Record<string, unknown>;
+      emittedAt: string;
+      sessionId?: string;
+    }>,
+  ): Promise<number> {
+    if (!this.db || events.length === 0) return 0;
+    try {
+      const stmt = this.db.prepare(
+        "INSERT INTO brain_events (session_id, kind, payload, recorded_at) VALUES (?, ?, ?, ?)",
+      );
+      let inserted = 0;
+      for (const e of events) {
+        stmt.run(
+          e.sessionId ?? null,
+          e.kind,
+          JSON.stringify(e.payload),
+          e.emittedAt,
+        );
+        inserted++;
+      }
+      return inserted;
+    } catch {
+      // Brain events are telemetry — a write failure must never break the
+      // deliberative path (INV-017 spirit). Caller re-buffers on failure.
+      return 0;
+    }
+  }
+
+  /**
+   * Cap the `brain_events` table: delete rows below `max(seq) - retention`.
+   * Called by `flush()` after each batched INSERT. Telemetry tape, not
+   * memory — bounded by design.
+   *
+   * (Synthetic-self Phase 8.)
+   */
+  async capBrainEvents(retention: number): Promise<number> {
+    if (!this.db || retention <= 0) return 0;
+    try {
+      const maxRow = this.db
+        .prepare("SELECT MAX(seq) as m FROM brain_events")
+        .get() as { m: number | null };
+      const maxSeq = maxRow?.m ?? 0;
+      if (maxSeq <= retention) return 0;
+      const cutoff = maxSeq - retention;
+      const info = this.db
+        .prepare("DELETE FROM brain_events WHERE seq < ?")
+        .run(cutoff);
+      return info.changes ?? 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  /**
+   * Read brain events with `seq > afterSeq`, ascending, limited. Used by the
+   * UI server's `GET /api/stream` SSE endpoint to tail the event tape.
+   *
+   * (Synthetic-self Phase 8.)
+   */
+  async getBrainEvents(
+    afterSeq: number,
+    limit = 100,
+  ): Promise<
+    Array<{
+      seq: number;
+      session_id: string | null;
+      kind: string;
+      payload: string;
+      recorded_at: string;
+    }>
+  > {
+    if (!this.db) return [];
+    const rows = this.db
+      .prepare(
+        "SELECT seq, session_id, kind, payload, recorded_at FROM brain_events " +
+          "WHERE seq > ? ORDER BY seq ASC LIMIT ?",
+      )
+      .all(afterSeq, limit) as Array<{
+      seq: number;
+      session_id: string | null;
+      kind: string;
+      payload: string;
+      recorded_at: string;
+    }>;
+    return rows;
+  }
+
+  /**
+   * Reconstruct a brain-state snapshot from the event tape for the UI's
+   * `GET /api/brain/state` page-load endpoint. No shared RAM required —
+   * everything here is derived from `brain_events` + `memories`:
+   *   - `lastEventAt`: recorded_at of the most recent brain_event (or null)
+   *   - `liveVsStale`: "live" if last event < 30s ago, "stale" if > 5min, else "idle"
+   *   - `reflexRuleCount`: count of active `lesson_learned` memories above the
+   *     reflex weight floor (0.3) — the rules the reflex cache would load
+   *   - `lastArousal`: payload.arousal of the most recent `arousal.change` (or null)
+   *   - `lastWmAssembled`: payload of the most recent `wm.assembled` (or null)
+   *   - `eventCount`: total rows in `brain_events`
+   *
+   * (Synthetic-self Phase 8.)
+   */
+  async getBrainStateSnapshot(): Promise<{
+    lastEventAt: string | null;
+    liveVsStale: "live" | "stale" | "idle" | "empty";
+    reflexRuleCount: number;
+    lastArousal: number | null;
+    lastWmAssembled: Record<string, unknown> | null;
+    eventCount: number;
+  }> {
+    if (!this.db) {
+      return {
+        lastEventAt: null,
+        liveVsStale: "empty",
+        reflexRuleCount: 0,
+        lastArousal: null,
+        lastWmAssembled: null,
+        eventCount: 0,
+      };
+    }
+    const lastRow = this.db
+      .prepare(
+        "SELECT recorded_at FROM brain_events ORDER BY seq DESC LIMIT 1",
+      )
+      .get() as { recorded_at: string } | undefined;
+    const countRow = this.db
+      .prepare("SELECT COUNT(*) as c FROM brain_events")
+      .get() as { c: number };
+    const eventCount = countRow?.c ?? 0;
+    let liveVsStale: "live" | "stale" | "idle" | "empty" = "empty";
+    let lastEventAt: string | null = null;
+    if (lastRow?.recorded_at) {
+      lastEventAt = lastRow.recorded_at;
+      const ms = Date.now() - Date.parse(lastRow.recorded_at);
+      if (!Number.isNaN(ms)) {
+        if (ms < 30_000) liveVsStale = "live";
+        else if (ms > 5 * 60_000) liveVsStale = "stale";
+        else liveVsStale = "idle";
+      }
+    }
+    // Reflex rule count: active lesson_learned above the reflex weight floor.
+    const ruleRow = this.db
+      .prepare(
+        "SELECT COUNT(*) as c FROM memories WHERE status = 'active' AND type = 'lesson_learned' AND weight >= 0.3",
+      )
+      .get() as { c: number };
+    // Last arousal.change payload.arousal.
+    let lastArousal: number | null = null;
+    const arousalRow = this.db
+      .prepare(
+        "SELECT payload FROM brain_events WHERE kind = 'arousal.change' ORDER BY seq DESC LIMIT 1",
+      )
+      .get() as { payload: string } | undefined;
+    if (arousalRow?.payload) {
+      try {
+        const p = JSON.parse(arousalRow.payload) as { arousal?: number };
+        if (typeof p.arousal === "number") lastArousal = p.arousal;
+      } catch {
+        // ignore malformed payload
+      }
+    }
+    // Last wm.assembled payload.
+    let lastWmAssembled: Record<string, unknown> | null = null;
+    const wmRow = this.db
+      .prepare(
+        "SELECT payload FROM brain_events WHERE kind = 'wm.assembled' ORDER BY seq DESC LIMIT 1",
+      )
+      .get() as { payload: string } | undefined;
+    if (wmRow?.payload) {
+      try {
+        lastWmAssembled = JSON.parse(wmRow.payload) as Record<string, unknown>;
+      } catch {
+        // ignore malformed payload
+      }
+    }
+    return {
+      lastEventAt,
+      liveVsStale,
+      reflexRuleCount: ruleRow?.c ?? 0,
+      lastArousal,
+      lastWmAssembled,
+      eventCount,
+    };
+  }
+
+  /**
    * Bloat ratio: fraction of active memories with weight below
    * archiveThreshold. 0.0 on an empty store.
    */

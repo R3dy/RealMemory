@@ -222,6 +222,22 @@ export function validateConfig(config: MemoryStoreConfig): void {
       throw new Error("brain.workingMemoryTokens must be a number in [200, 4000]");
     }
   }
+  // Synthetic-self Phase 8: brain.events (event-spine master switch) +
+  // brain.eventRetention (telemetry tape cap) validation.
+  if (
+    config.brain?.events !== undefined &&
+    typeof config.brain.events !== "boolean"
+  ) {
+    throw new Error("brain.events must be a boolean");
+  }
+  if (config.brain?.eventRetention !== undefined) {
+    if (
+      !Number.isInteger(config.brain.eventRetention) ||
+      config.brain.eventRetention < 1000
+    ) {
+      throw new Error("brain.eventRetention must be an integer >= 1000");
+    }
+  }
 }
 
 function readJsonFile(path: string): Record<string, unknown> {
