@@ -11,6 +11,10 @@ export interface UiState {
   /** 0..1 — scales synapse pulse particle counts. */
   pulseDensity: number;
   reducedMotion: boolean;
+  /** 0..1 — scales every 3D Brain Graph glow surface (Bloom, emissive, halos,
+   *  bolts, selection rings, brain-shell fresnel + wireframe). 1.0 = full glow
+   *  (default, bit-identical to pre-slider), 0 = no glow (flat shaded). */
+  glowIntensity: number;
   /** Floating memory labels on the 3D graph. */
   labels: boolean;
   /** Neuron coloring: 'domain' (region colors, default) or 'type' (TYPE_COLORS). */
@@ -31,6 +35,7 @@ let state: UiState = {
   autoRotate: true,
   pulseDensity: 0.8,
   reducedMotion: MEDIA_REDUCED,
+  glowIntensity: 1,
   labels: true,
   colorMode: 'domain',
   dataVersion: 0,

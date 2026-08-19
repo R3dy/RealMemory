@@ -109,6 +109,21 @@ function SettingsMenu() {
               className="w-full accent-[#ffb627]"
             />
           </label>
+          <label className="block py-1.5 text-[13px] text-mid">
+            <span className="mb-1 flex justify-between">
+              Glow
+              <span className="font-mono text-[11px] text-arc">{ui.glowIntensity.toFixed(2)}</span>
+            </span>
+            <input
+              type="range"
+              min={0}
+              max={1}
+              step={0.05}
+              value={ui.glowIntensity}
+              onChange={(e) => uiStore.set({ glowIntensity: Number(e.target.value) })}
+              className="w-full accent-[#00d4ff]"
+            />
+          </label>
           <label className="flex cursor-pointer items-center justify-between py-1.5 text-[13px] text-mid">
             Reduced motion
             <input
