@@ -13,7 +13,7 @@ import {
   type BrainEventKind,
 } from "../src/brain-events";
 import { MemoryStore } from "../src/store";
-import { Database as BetterSqlite3 } from "better-sqlite3";
+import Database from "better-sqlite3";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -24,7 +24,7 @@ function uniqueDbPath(): string {
   return join(dir, "test.db");
 }
 async function openRaw(path: string) {
-  const db = new BetterSqlite3(path);
+  const db = new Database(path);
   return db;
 }
 // --- end helpers ---

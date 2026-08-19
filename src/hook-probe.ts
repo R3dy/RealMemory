@@ -614,5 +614,40 @@ export async function printDoctorTable(
   }
 
   if (report.degraded) return 2;
+
+  // Synthetic-self Phase 8: event-spine section.
+  // Reports brain_events volume + recall_hit_rate. The dropped count + flush
+  // lag p95 are plugin-process-only (in-RAM ring); --doctor reads from the
+  // store so those are observable via the /brain UI's LIVE badge, not here.
+  try {
+    const sixtySecondsAgo = new Date(Date.now() - 60_000).toISOString();
+    const recentEvents = await store.getBrainEvents(0, 1000);
+    const eventsLastMin = recentEvents.filter(
+      (e) => e.recorded_at >= sixtySecondsAgo,
+    ).length;
+    const totalEvents = recentEvents.length;
+    const metricsSummary = await store.getMetricSummary();
+    const recallHit = metricsSummary.find((m) => m.metric_name === "recall_hit");
+    const recallMiss = metricsSummary.find((m) => m.metric_name === "recall_miss");
+    const hitCount = recallHit?.count ?? 0;
+    const missCount = recallMiss?.count ?? 0;
+    const totalRecall = hitCount + missCount;
+    const recallHitRate = totalRecall > 0 ? (hitCount / totalRecall) : 0;
+
+    stdout.write("\n── event spine (synthetic-self Phase 8) ─────────────────────\n");
+    stdout.write(`brain_events total:     ${totalEvents}\n`);
+    stdout.write(`events last 60s:        ${eventsLastMin}/min\n`);
+    stdout.write(`recall_hit_rate:        ${recallHitRate.toFixed(2)} (${hitCount} hits / ${missCount} misses)`);
+    if (totalRecall === 0) {
+      stdout.write(" — no recall data yet (run a session with injected memories)");
+    } else if (recallHitRate === 0 && missCount > 0) {
+      stdout.write(" — WARNING: recall_miss > 0 but recall_hit = 0 (dead-metric signature?)");
+    }
+    stdout.write("\n");
+    stdout.write("dropped/flush-lag:      plugin-process-only (see /brain LIVE badge)\n");
+  } catch {
+    // brain_events table may not exist on old DBs (pre-v5). Silent skip.
+  }
+
   return 0;
 }
