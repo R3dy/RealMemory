@@ -211,7 +211,7 @@ async function handleRequest(
   }
 
   if (pathname === "/version") {
-    sendJson(res, 200, { version: "0.14.0" });
+    sendJson(res, 200, { version: "0.16.0" });
     return;
   }
 
@@ -236,6 +236,24 @@ async function handleRequest(
     const since = url.searchParams.get("since") ?? undefined;
     const summary = await store.getMetricSummary(name, since);
     sendJson(res, 200, summary);
+    return;
+  }
+
+  // Synthetic-self Phase 8: brain event spine.
+  // GET /api/brain/state — snapshot for page load (no shared RAM required;
+  // reconstructed from the brain_events tape). See §4 Phase 8 / §5.1.
+  if (pathname === "/api/brain/state") {
+    const snapshot = await store.getBrainStateSnapshot();
+    sendJson(res, 200, snapshot);
+    return;
+  }
+
+  // GET /api/stream?after=<seq> — Server-Sent Events tail of brain_events.
+  // Long-lived: polls every 250ms for new rows, pushes each as a named event,
+  // sends a 15s heartbeat comment, closes on client disconnect. Localhost-only,
+  // read-only (INV-013). SSE needs nothing beyond node:http (INV-014).
+  if (pathname === "/api/stream") {
+    handleBrainStream(url, req, res, store);
     return;
   }
 
@@ -484,6 +502,101 @@ async function handleMemory(
     }
     sendJson(res, 500, { error: message });
   }
+}
+
+/**
+ * SSE handler for `GET /api/stream?after=<seq>` (synthetic-self Phase 8).
+ *
+ * Tails the `brain_events` table: polls `store.getBrainEvents(after, 100)` on
+ * a 250ms interval, pushes each row as a named SSE event (`event: <kind>\n
+ * data: <payload-json>\n\n`), advances `after` to the last seq seen, sends a
+ * `:heartbeat` comment every 15s, and stops cleanly on `req.close`.
+ *
+ * Localhost-only + read-only (INV-013). No framework — raw `node:http`
+ * response writes (INV-014). Bounded: at most one poll per 250ms, at most 100
+ * rows per poll, so a runaway event producer cannot stall the server.
+ *
+ * (Synthetic-self Phase 8 — see `docs/architecture/synthetic-self.md` §5.1.)
+ */
+function handleBrainStream(
+  url: URL,
+  req: IncomingMessage,
+  res: ServerResponse,
+  store: MemoryStore,
+): void {
+  const afterParam = url.searchParams.get("after");
+  let after = 0;
+  if (afterParam !== null) {
+    const parsed = Number.parseInt(afterParam, 10);
+    if (!Number.isNaN(parsed) && parsed >= 0) after = parsed;
+  }
+
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+    // Disable Nagle for lower latency on localhost.
+    "X-Accel-Buffering": "no",
+  });
+  // Flush headers immediately so the client sees the stream open.
+  if (typeof res.flushHeaders === "function") res.flushHeaders();
+
+  let closed = false;
+  let heartbeatTimer: NodeJS.Timeout;
+  let pollTimer: NodeJS.Timeout;
+
+  const cleanup = (): void => {
+    if (closed) return;
+    closed = true;
+    clearInterval(pollTimer);
+    clearInterval(heartbeatTimer);
+    try {
+      res.end();
+    } catch {
+      // already closed
+    }
+  };
+
+  req.on("close", cleanup);
+  req.on("error", cleanup);
+
+  // Heartbeat: a comment line every 15s keeps proxies from dropping the
+  // connection and proves the stream is alive without sending data.
+  heartbeatTimer = setInterval(() => {
+    if (closed) return;
+    try {
+      res.write(":heartbeat\n\n");
+    } catch {
+      cleanup();
+    }
+  }, 15_000);
+
+  // Poll brain_events for rows with seq > after, push as named events.
+  pollTimer = setInterval(() => {
+    if (closed) return;
+    void (async () => {
+      try {
+        const rows = await store.getBrainEvents(after, 100);
+        if (rows.length === 0) return;
+        for (const row of rows) {
+          if (closed) return;
+          // Named event: event: <kind>\ndata: <payload-json>\n\n
+          // payload is already JSON-stringified in the DB; pass through.
+          const data = row.payload || "{}";
+          const chunk = `event: ${row.kind}\ndata: ${data}\nid: ${row.seq}\n\n`;
+          try {
+            res.write(chunk);
+          } catch {
+            cleanup();
+            return;
+          }
+          after = row.seq;
+        }
+      } catch {
+        // A poll error must never kill the stream — try again next tick.
+      }
+    })();
+  }, 250);
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
