@@ -4,24 +4,15 @@ import HoloPanel from '@/components/HoloPanel';
 import { getMetrics } from '@/lib/data';
 import { PREDICTION_ERROR_COLORS } from '@/lib/colors';
 import { CountUp, hexA } from './anim';
+import { useBrainEventsByKind } from '@/lib/use-brain-stream';
 
 /**
  * PredictPanel — brain.md §4.
  * Rescorla–Wagner prediction-error learning: semicircular surprise meter,
  * low|med|high distribution donut, open-predictions list with live outcomes.
- * surprise ≥ 0.7 → instant reflex rule.
+ * Driven by real `predict.made` → `predict.resolved` events (synthetic-self
+ * Phase 8) — no Math.random. surprise ≥ 0.7 → instant reflex rule.
  */
-
-const EXPECT_POOL = [
-  '"pnpm test" passes',
-  '"deploy ci" succeeds after migrate',
-  'recall hit for "drizzle"',
-  '"vitest e2e" stays green',
-  'lambda cold start < 1s',
-  '"pnpm build" exit 0',
-  'cache hit on graph hydrate',
-  'oauth refresh overlaps cleanly',
-];
 
 interface Prediction {
   id: number;
@@ -48,59 +39,52 @@ export default function PredictPanel() {
     return { low: sum('prediction_error:low'), med: sum('prediction_error:med'), high: sum('prediction_error:high') };
   }, []);
   const [dist, setDist] = useState(totals);
-  const [surprise, setSurprise] = useState(0.18);
-  const [preds, setPreds] = useState<Prediction[]>([
-    { id: 1, text: EXPECT_POOL[0], conf: 0.72, status: 'open' },
-    { id: 2, text: EXPECT_POOL[2], conf: 0.81, status: 'open' },
-    { id: 3, text: EXPECT_POOL[4], conf: 0.64, status: 'open' },
-    { id: 4, text: EXPECT_POOL[6], conf: 0.58, status: 'open' },
-  ]);
-  const seq = useRef(10);
+  const [surprise, setSurprise] = useState(0);
+  const [preds, setPreds] = useState<Prediction[]>([]);
+  const seq = useRef(0);
 
-  // live outcomes — one open prediction resolves every ~6s
+  // Real event-driven: predict.made opens a prediction; predict.resolved closes it.
+  const madeEvents = useBrainEventsByKind(['predict.made']);
+  const resolvedEvents = useBrainEventsByKind(['predict.resolved']);
+
+  // Open predictions from predict.made events.
   useEffect(() => {
-    let alive = true;
-    let timer = 0;
-    const resolve = () => {
-      if (!alive) return;
-      setPreds((rows) => {
-        const openIdx = rows.findIndex((r) => r.status === 'open');
-        if (openIdx === -1) return rows;
-        const id = ++seq.current;
-        const isSurprise = Math.random() < 0.3;
-        const err = isSurprise ? 0.7 + Math.random() * 0.25 : 0.05 + Math.random() * 0.3;
-        const next = [...rows];
-        next[openIdx] = {
-          ...next[openIdx],
-          status: isSurprise ? 'surprise' : 'hit',
-          err: isSurprise ? err : undefined,
-        };
-        // keep the window at ~4 open predictions
-        const openCount = next.filter((r) => r.status === 'open').length;
-        if (openCount < 4) {
-          next.push({
-            id,
-            text: EXPECT_POOL[id % EXPECT_POOL.length],
-            conf: 0.5 + Math.random() * 0.45,
-            status: 'open',
-          });
-        }
-        return next.slice(-7);
-      });
-      const isSurprise = Math.random() < 0.3;
-      const err = isSurprise ? 0.7 + Math.random() * 0.25 : 0.05 + Math.random() * 0.3;
-      setSurprise(err);
-      setDist((d) =>
-        isSurprise ? { ...d, high: d.high + 1 } : err > 0.2 ? { ...d, med: d.med + 1 } : { ...d, low: d.low + 1 },
-      );
-      timer = window.setTimeout(resolve, 6000);
-    };
-    timer = window.setTimeout(resolve, 3500);
-    return () => {
-      alive = false;
-      window.clearTimeout(timer);
-    };
-  }, []);
+    if (madeEvents.length === 0) return;
+    const latest = madeEvents[madeEvents.length - 1]!;
+    const id = ++seq.current;
+    const tool = (latest.payload.tool as string) ?? 'unknown';
+    const conf = (latest.payload.confidence as number) ?? 0.5;
+    setPreds((prev) =>
+      [...prev, { id, text: `"${tool}" succeeds`, conf, status: 'open' as const }].slice(-7),
+    );
+  }, [madeEvents]);
+
+  // Resolved predictions from predict.resolved events.
+  useEffect(() => {
+    if (resolvedEvents.length === 0) return;
+    const latest = resolvedEvents[resolvedEvents.length - 1]!;
+    const surpriseVal = (latest.payload.surprise as number) ?? 0;
+    const bin = (latest.payload.bin as string) ?? 'low';
+    const isSurprise = surpriseVal >= 0.7;
+    setSurprise(surpriseVal);
+    setDist((d) => {
+      if (bin === 'high') return { ...d, high: d.high + 1 };
+      if (bin === 'med') return { ...d, med: d.med + 1 };
+      return { ...d, low: d.low + 1 };
+    });
+    // Close the oldest open prediction.
+    setPreds((prev) => {
+      const openIdx = prev.findIndex((r) => r.status === 'open');
+      if (openIdx === -1) return prev;
+      const next = [...prev];
+      next[openIdx] = {
+        ...next[openIdx],
+        status: isSurprise ? 'surprise' : 'hit',
+        err: isSurprise ? surpriseVal : undefined,
+      };
+      return next;
+    });
+  }, [resolvedEvents]);
 
   const total = dist.low + dist.med + dist.high;
   const C = 2 * Math.PI * 46; // donut circumference

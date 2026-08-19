@@ -2,22 +2,23 @@ import { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import HoloPanel from '@/components/HoloPanel';
 import { CountUp, hexA, tsNow } from './anim';
+import { useBrainEventsByKind } from '@/lib/use-brain-stream';
 
 /**
  * BrainLoopPipeline — brain.md §2.
  * Per-turn intent classification as a horizontal signal pipeline:
- * TURN SIGNAL → classifier core → five intent lanes. A packet travels the
- * pipe every ~2.5s; high-signal lanes terminate in AUTO-STORE ENGRAM.
+ * TURN SIGNAL → classifier core → five intent lanes. Driven by real
+ * `perceive.intent` events (synthetic-self Phase 8) — no Math.random.
  */
 
 type Lane = 'correction' | 'repetition' | 'preference' | 'tool_outcome' | 'generic';
 
-const LANES: { id: Lane; color: string; autoStore?: boolean; base: number; pick: number }[] = [
-  { id: 'correction', color: '#ff9f1c', autoStore: true, base: 23, pick: 0.14 },
-  { id: 'repetition', color: '#8a97ab', base: 41, pick: 0.2 },
-  { id: 'preference', color: '#4da6ff', autoStore: true, base: 12, pick: 0.1 },
-  { id: 'tool_outcome', color: '#00d4ff', base: 88, pick: 0.28 },
-  { id: 'generic', color: '#4b5f7c', base: 204, pick: 0.28 },
+const LANES: { id: Lane; color: string; autoStore?: boolean; base: number }[] = [
+  { id: 'correction', color: '#ff9f1c', autoStore: true, base: 0 },
+  { id: 'repetition', color: '#8a97ab', base: 0 },
+  { id: 'preference', color: '#4da6ff', autoStore: true, base: 0 },
+  { id: 'tool_outcome', color: '#00d4ff', base: 0 },
+  { id: 'generic', color: '#4b5f7c', base: 0 },
 ];
 
 interface Packet {
@@ -33,17 +34,8 @@ interface LogRow {
   color: string;
 }
 
-function pickLane(): Lane {
-  const r = Math.random();
-  let acc = 0;
-  for (const l of LANES) {
-    acc += l.pick;
-    if (r <= acc) return l.id;
-  }
-  return 'generic';
-}
-
 export default function BrainLoopPipeline() {
+  const intentEvents = useBrainEventsByKind(['perceive.intent']);
   const [packet, setPacket] = useState<Packet | null>(null);
   const [burst, setBurst] = useState(0);
   const [counts, setCounts] = useState<Record<Lane, number>>(() =>
@@ -55,23 +47,16 @@ export default function BrainLoopPipeline() {
   const inletRef = useRef<HTMLDivElement>(null);
   const trackRefs = useRef<Partial<Record<Lane, HTMLDivElement | null>>>({});
 
-  // mock packet stream — one packet every ~2.5s
+  // Real event-driven: each perceive.intent event fires a packet down the lane
+  // matching its intent. No Math.random — honesty §5.5.
   useEffect(() => {
-    let alive = true;
-    let timer = 0;
-    const fire = () => {
-      if (!alive) return;
-      const lane = pickLane();
-      const id = ++seq.current;
-      setPacket({ id, lane, phase: 'in', trackW: trackRefs.current[lane]?.clientWidth ?? 300 });
-      timer = window.setTimeout(fire, 2500);
-    };
-    timer = window.setTimeout(fire, 900);
-    return () => {
-      alive = false;
-      window.clearTimeout(timer);
-    };
-  }, []);
+    if (intentEvents.length === 0) return;
+    const latest = intentEvents[intentEvents.length - 1]!;
+    const intent = (latest.payload.intent as string) as Lane | undefined;
+    const lane = LANES.some((l) => l.id === intent) ? (intent as Lane) : 'generic';
+    const id = ++seq.current;
+    setPacket({ id, lane, phase: 'in', trackW: trackRefs.current[lane]?.clientWidth ?? 300 });
+  }, [intentEvents]);
 
   const land = (lane: Lane) => {
     setCounts((c) => ({ ...c, [lane]: c[lane] + 1 }));

@@ -6,11 +6,13 @@ import type { Memory } from '@/lib/data';
 import { INHIBITION_COLORS, TYPE_COLORS, weightColor } from '@/lib/colors';
 import type { InhibitionLevel } from '@/lib/colors';
 import { hexA, tsNow } from './anim';
+import { useBrainEventsByKind } from '@/lib/use-brain-stream';
 
 /**
  * ReflexCore — brain.md §3.
  * In-RAM rule cache (weight ≥ 0.3 admitted) + inhibition engine with a live
- * fire log (reflex_fire|block|rewrite|override).
+ * fire log driven by real reflex.fire|rewrite|block|override events
+ * (synthetic-self Phase 8) — no Math.random.
  */
 
 const LEVELS: InhibitionLevel[] = ['off', 'warn', 'rewrite', 'block'];
@@ -25,18 +27,12 @@ const ACTION_COLORS: Record<FireAction, string> = {
   BLOCK: INHIBITION_COLORS.block,
 };
 
-const FIRE_POOL: { action: FireAction; text: string }[] = [
-  { action: 'REWRITE', text: `"git push --force" → suggested --force-with-lease` },
-  { action: 'BLOCK', text: `"rm -rf node_modules" · rule R-17` },
-  { action: 'WARN', text: `"npm install" → user prefers pnpm` },
-  { action: 'FIRE', text: `lesson: migrate-before-deploy · pre-check injected` },
-  { action: 'REWRITE', text: `"DROP TABLE" → wrapped in transaction` },
-  { action: 'WARN', text: `recall by tag only → compound filters advised` },
-  { action: 'BLOCK', text: `"git reset --hard origin/main" · rule R-04` },
-  { action: 'FIRE', text: `pattern: deploy-after-green-ci · context primed` },
-  { action: 'WARN', text: `token rotation overlap window · 30s grace` },
-  { action: 'REWRITE', text: `"console.log debug" → structured logger` },
-];
+const KIND_TO_ACTION: Record<string, FireAction> = {
+  'reflex.fire': 'WARN',
+  'reflex.rewrite': 'REWRITE',
+  'reflex.block': 'BLOCK',
+  'reflex.override': 'FIRE',
+};
 
 interface FireRow {
   id: number;
@@ -62,23 +58,25 @@ export default function ReflexCore() {
   const [fires, setFires] = useState<FireRow[]>([]);
   const seq = useRef(0);
 
-  // live fire-log stream — new row every 4–7s
+  // Real event-driven: subscribe to reflex.fire/rewrite/block/override events.
+  const reflexEvents = useBrainEventsByKind([
+    'reflex.fire',
+    'reflex.rewrite',
+    'reflex.block',
+    'reflex.override',
+  ]);
+
   useEffect(() => {
-    let alive = true;
-    let timer = 0;
-    const push = () => {
-      if (!alive) return;
-      const t = FIRE_POOL[Math.floor(Math.random() * FIRE_POOL.length)];
-      const id = ++seq.current;
-      setFires((rows) => [{ id, ts: tsNow(), action: t.action, text: t.text }, ...rows].slice(0, 7));
-      timer = window.setTimeout(push, 4000 + Math.random() * 3000);
-    };
-    timer = window.setTimeout(push, 1600);
-    return () => {
-      alive = false;
-      window.clearTimeout(timer);
-    };
-  }, []);
+    if (reflexEvents.length === 0) return;
+    const latest = reflexEvents[reflexEvents.length - 1]!;
+    const action = KIND_TO_ACTION[latest.kind] ?? 'FIRE';
+    const tool = (latest.payload.tool as string) ?? 'unknown';
+    const note = (latest.payload.note as string) ?? '';
+    const id = ++seq.current;
+    setFires((rows) =>
+      [{ id, ts: tsNow(), action, text: `"${tool}" ${note ? '· ' + note : ''}` }, ...rows].slice(0, 7),
+    );
+  }, [reflexEvents]);
 
   return (
     <HoloPanel

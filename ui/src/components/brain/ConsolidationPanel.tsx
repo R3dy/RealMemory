@@ -3,12 +3,14 @@ import { motion } from 'framer-motion';
 import HoloPanel from '@/components/HoloPanel';
 import SynapseTag from '@/components/SynapseTag';
 import { hexA } from './anim';
+import { useBrainEventsByKind } from '@/lib/use-brain-stream';
 
 /**
  * ConsolidationPanel — brain.md §6.
  * Schema formation: clusters of ≥3 similar lessons (cosine ≥ 0.80) funnel into
  * a general task_pattern rule with violet derived_from beams back to episodes.
- * Cycles through 3 mock clusters every 12s.
+ * Driven by real `consolidate.cluster` events (synthetic-self Phase 8) — no
+ * Math.random, no setInterval cycling through mock variants.
  */
 
 interface Variant {
@@ -19,50 +21,14 @@ interface Variant {
   date: string;
 }
 
-const VARIANTS: Variant[] = [
-  {
-    episodes: [
-      'deploy failed: migrations pending (ci)',
-      'prod boot crash: schema mismatch v42',
-      'deploy rolled back: missing migration',
-      'drizzle push skipped in pipeline',
-    ],
-    cos: ['0.84', '0.82', '0.87'],
-    rule: 'Run pnpm db:migrate before any deploy to ci or production',
-    schema: 'SCHEMA #8',
-    date: 'today',
-  },
-  {
-    episodes: [
-      'canvas hit-test flaked on ci runner',
-      'e2e graph click missed by 2px',
-      'playwright dpr differed per runner',
-    ],
-    cos: ['0.81', '0.85'],
-    rule: 'Pin deviceScaleFactor and viewport in all canvas hit tests',
-    schema: 'SCHEMA #9',
-    date: 'today',
-  },
-  {
-    episodes: [
-      'lambda cold cache after deploy',
-      'first request p95 spiked 3.1s',
-      'warm container not reused post-deploy',
-      'in-process cache empty on boot',
-    ],
-    cos: ['0.83', '0.8', '0.86'],
-    rule: 'Warm caches lazily — never assume cross-deploy container reuse',
-    schema: 'SCHEMA #10',
-    date: 'today',
-  },
-];
-
-const HISTORY = [
-  'SCHEMA #7 · 2025-08-10 · 3 episodes → 1 rule',
-  'SCHEMA #6 · 2025-08-02 · 4 episodes → 1 rule',
-  'SCHEMA #5 · 2025-07-21 · 3 episodes → 1 rule',
-  'SCHEMA #4 · 2025-07-09 · 5 episodes → 1 rule',
-];
+// Placeholder variant shown when no consolidate.cluster events have arrived yet.
+const NO_EVENTS_VARIANT: Variant = {
+  episodes: [],
+  cos: [],
+  rule: 'awaiting consolidation events…',
+  schema: '',
+  date: '',
+};
 
 // episode anchor positions (% of left cluster box)
 const EP_POS = [
@@ -72,21 +38,29 @@ const EP_POS = [
   { x: 40, y: 74 },
 ];
 
-const CYCLE_MS = 12000;
-
 export default function ConsolidationPanel() {
+  const clusterEvents = useBrainEventsByKind(['consolidate.cluster']);
   const [cycle, setCycle] = useState(0);
   const [targets, setTargets] = useState<{ x: number; y: number }[] | null>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const funnelRef = useRef<HTMLDivElement>(null);
   const epRefs = useRef<(HTMLDivElement | null)[]>([]);
 
-  const variant = VARIANTS[cycle % VARIANTS.length];
-
+  // Real event-driven: each consolidate.cluster event advances the display.
   useEffect(() => {
-    const iv = window.setInterval(() => setCycle((c) => c + 1), CYCLE_MS);
-    return () => window.clearInterval(iv);
-  }, []);
+    if (clusterEvents.length === 0) return;
+    setCycle((c) => c + 1);
+  }, [clusterEvents]);
+
+  const variant: Variant = clusterEvents.length > 0
+    ? {
+        episodes: [`cluster event #${clusterEvents.length}`],
+        cos: [],
+        rule: `Synthesized ${clusterEvents[clusterEvents.length - 1]!.payload.rulesSynthesized ?? 1} rule(s) from episodic consolidation`,
+        schema: `SCHEMA #${cycle}`,
+        date: 'now',
+      }
+    : NO_EVENTS_VARIANT;
 
   // measure episode → funnel drift deltas per cycle
   useLayoutEffect(() => {
@@ -257,11 +231,15 @@ export default function ConsolidationPanel() {
         <div className="holo-divider my-3" />
         <div className="flex flex-col gap-1">
           <span className="micro-label">consolidation history</span>
-          {HISTORY.map((h) => (
-            <span key={h} className="font-mono text-[10.5px] text-dim">
-              {h}
-            </span>
-          ))}
+          {clusterEvents.length === 0 ? (
+            <span className="font-mono text-[10.5px] text-dim">no consolidation events yet — events arrive on compaction</span>
+          ) : (
+            clusterEvents.slice(-4).reverse().map((ev, i) => (
+              <span key={ev.seq} className="font-mono text-[10.5px] text-dim">
+                {`SCHEMA #${cycle - i} · ${ev.recordedAt.slice(11, 19)} · ${(ev.payload.rulesSynthesized as number) ?? 1} rule(s) synthesized`}
+              </span>
+            ))
+          )}
         </div>
       </div>
     </HoloPanel>

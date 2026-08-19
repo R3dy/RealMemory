@@ -1,14 +1,19 @@
 import { useEffect, useState } from 'react';
-import { getMetrics } from '@/lib/data';
+import { useBrainEventsByKind, useBrainStream } from '@/lib/use-brain-stream';
 
 /**
  * ArousalGauge — brain.md §1.
- * Horizontal amber meter (0–1): needle sweeps 0→value (800ms expo-out),
- * then idle sine oscillation ±0.03 (2.4s period). Shows implied temperature
- * multiplier from the arousal_modulation tracker.
+ * Horizontal amber meter (0–1): driven by real `arousal.change` events
+ * (synthetic-self Phase 8) + the /api/brain/state snapshot. The idle sine
+ * oscillation (±0.03) is a visual breathing effect, not data. No Math.random.
  */
 export default function ArousalGauge() {
-  const latest = getMetrics('arousal_modulation')[0]?.latest ?? 0.34;
+  const arousalEvents = useBrainEventsByKind(['arousal.change']);
+  const { snapshot } = useBrainStream();
+  // Seed from the snapshot's lastArousal, update from real events.
+  const latest = arousalEvents.length > 0
+    ? (arousalEvents[arousalEvents.length - 1]!.payload.arousal as number) ?? 0
+    : snapshot?.lastArousal ?? 0;
   const [v, setV] = useState(0);
 
   useEffect(() => {
@@ -20,6 +25,7 @@ export default function ArousalGauge() {
         const p = el / 800;
         setV(latest * (1 - Math.pow(2, -10 * p)));
       } else {
+        // Visual breathing effect (±0.03 sine) — NOT data, just animation.
         setV(Math.min(1, Math.max(0, latest + 0.03 * Math.sin(((el - 800) / 2400) * Math.PI * 2))));
       }
       raf = requestAnimationFrame(tick);

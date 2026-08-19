@@ -7,13 +7,14 @@ import { MEMORIES, getMetrics } from '@/lib/data';
 import type { MemoryType } from '@/lib/data';
 import { hexA } from './anim';
 import { cn } from '@/lib/utils';
+import { useBrainEventsByKind } from '@/lib/use-brain-stream';
 
 /**
  * WorkingMemoryWindow — brain.md §5.
  * The 800-token budget injected every turn, as a segmented capacity bar:
  * IDENTITY 150 · TASK FRAME 200 · ACTIVE LESSONS 300 · OPEN PREDICTIONS 150.
- * Fill ∝ utilization (working_memory:<slot> metrics); click a segment to
- * slide out its actual slot contents.
+ * Driven by real `wm.assembled` events (synthetic-self Phase 8) — slot
+ * memory IDs + token counts come from the event payload, not Math.random.
  */
 
 interface Slot {
@@ -33,32 +34,46 @@ const SLOTS: Slot[] = [
   { id: 'openPredictions', label: 'OPEN PREDICTIONS', budget: 150, color: '#b26bff', metric: 'working_memory:scratch' },
 ];
 
-const PREDICTIONS = [
-  { text: '"pnpm test" passes after refactor', conf: 0.72 },
-  { text: 'deploy ci green — migration step present', conf: 0.81 },
-  { text: 'recall hit for "drizzle migrate"', conf: 0.64 },
-];
-
 export default function WorkingMemoryWindow() {
+  const wmEvents = useBrainEventsByKind(['wm.assembled']);
   const [util, setUtil] = useState<Record<string, number>>(() =>
-    Object.fromEntries(SLOTS.map((s) => [s.id, getMetrics(s.metric)[0]?.latest ?? 0.6])),
+    Object.fromEntries(SLOTS.map((s) => [s.id, getMetrics(s.metric)[0]?.latest ?? 0])),
   );
   const [glow, setGlow] = useState<string | null>(null);
   const [open, setOpen] = useState<string | null>(null);
 
-  // utilization ticks — small ± updates every ~8s with a brief segment glow
+  // Real event-driven: wm.assembled events carry slot memory IDs + token budget.
+  // Update utilization from the payload's slot occupancy.
   useEffect(() => {
-    const iv = window.setInterval(() => {
-      const slot = SLOTS[Math.floor(Math.random() * SLOTS.length)];
-      setUtil((u) => ({
-        ...u,
-        [slot.id]: Math.min(0.97, Math.max(0.45, u[slot.id] + (Math.random() - 0.5) * 0.06)),
-      }));
-      setGlow(slot.id);
-      window.setTimeout(() => setGlow(null), 900);
-    }, 8000);
-    return () => window.clearInterval(iv);
-  }, []);
+    if (wmEvents.length === 0) return;
+    const latest = wmEvents[wmEvents.length - 1]!;
+    const payload = latest.payload;
+    const tokenBudget = (payload.tokenBudget as number) ?? 800;
+    // Slot utilization = slot memory count / expected, clamped to budget ratio.
+    const slotMap: Record<string, string[]> = {
+      identity: (payload.identity as string[]) ?? [],
+      taskFrame: (payload.taskFrame as string[]) ?? [],
+      queriedLessons: (payload.queriedLessons as string[]) ?? [],
+      freshLessons: (payload.freshLessons as string[]) ?? [],
+      openPredictions: (payload.openPredictions as string[]) ?? [],
+    };
+    setUtil((u) => {
+      const next = { ...u };
+      for (const s of SLOTS) {
+        const ids = slotMap[s.id] ?? [];
+        // Utilization: at least 0.3 if non-empty (something was injected),
+        // scaled by count relative to a nominal 3-per-slot.
+        const ratio = ids.length > 0 ? Math.min(0.95, 0.3 + (ids.length / 3) * 0.4) : 0.1;
+        next[s.id] = ratio;
+      }
+      return next;
+    });
+    // Glow the most-utilized slot.
+    const glowSlot = SLOTS.reduce((best, s) => (util[s.id] > util[best.id] ? s : best), SLOTS[0]!);
+    setGlow(glowSlot.id);
+    const timer = window.setTimeout(() => setGlow(null), 900);
+    return () => window.clearTimeout(timer);
+  }, [wmEvents]);
 
   const contents = useMemo(() => {
     const map: Record<string, typeof MEMORIES> = {};

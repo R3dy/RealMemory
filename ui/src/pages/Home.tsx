@@ -558,33 +558,55 @@ function ScopeRow() {
 
 // ---------------------------------------------------------------------------
 // Event ticker — design.md §7.10 / home.md §7
+// Driven by real brain events (synthetic-self Phase 8) — no Math.random.
+// Falls back to a static "awaiting events" message when the stream is empty.
 // ---------------------------------------------------------------------------
 
-const TICKER_EVENTS = [
-  () => {
-    const m = MEMORIES[Math.floor(Math.random() * MEMORIES.length)];
-    return `▸ RECALL HIT · ${m.type} · ${m.domain ?? 'global'} · w ${m.weight.toFixed(2)}`;
-  },
-  () => `▸ PREDICTION ERROR: ${['LOW', 'MED', 'HIGH'][Math.floor(Math.random() * 3)]} · lesson encoded`,
-  () => `▸ REFLEX BLOCK · rm -rf build/ · rule R-${Math.floor(Math.random() * 30) + 1}`,
-  () => {
-    const m = MEMORIES[Math.floor(Math.random() * MEMORIES.length)];
-    return `▸ REINFORCE · ${m.id.slice(0, 8)}… · weight +0.0${Math.floor(Math.random() * 4) + 1}`;
-  },
-  () => `▸ DECAY PASS · ${Math.floor(Math.random() * 12) + 2} engrams faded · 0 archived`,
-  () => `▸ SCHEMA FORMATION · cluster ${Math.floor(Math.random() * 8) + 1} · ${Math.floor(Math.random() * 6) + 3} members`,
-  () => `▸ WORKING MEMORY · slot rotated · goal pinned`,
-];
+import { useBrainStream } from '@/lib/use-brain-stream';
+
+function formatBrainEvent(ev: { kind: string; payload: Record<string, unknown> }): string {
+  switch (ev.kind) {
+    case 'perceive.intent':
+      return `▸ INTENT · ${ev.payload.intent ?? 'generic'} · ${(ev.payload.textSnippet as string ?? '').slice(0, 40)}`;
+    case 'reflex.fire':
+      return `▸ REFLEX FIRE · ${ev.payload.tool ?? 'unknown'} · ${(ev.payload.note as string ?? '').slice(0, 30)}`;
+    case 'reflex.block':
+      return `▸ REFLEX BLOCK · ${ev.payload.tool ?? 'unknown'} · blocked`;
+    case 'reflex.rewrite':
+      return `▸ REFLEX REWRITE · ${ev.payload.tool ?? 'unknown'} · args corrected`;
+    case 'reflex.override':
+      return `▸ REFLEX OVERRIDE · ${ev.payload.tool ?? 'unknown'} · confidence decremented`;
+    case 'predict.made':
+      return `▸ PREDICT · ${ev.payload.tool ?? 'unknown'} · willSucceed=${ev.payload.willSucceed} conf=${(ev.payload.confidence as number ?? 0).toFixed(2)}`;
+    case 'predict.resolved':
+      return `▸ PREDICTION ERROR · ${(ev.payload.bin as string ?? 'low')} · surprise=${(ev.payload.surprise as number ?? 0).toFixed(2)}`;
+    case 'wm.assembled':
+      return `▸ WORKING MEMORY · assembled · ${(ev.payload.delivered as unknown[] ?? []).length} IDs delivered`;
+    case 'encode.stored':
+      return `▸ ENCODE · ${ev.payload.type ?? 'memory'} stored · ${ev.payload.tool ?? ''}`;
+    case 'encode.reinforced':
+      return `▸ REINFORCE · ${(ev.payload.memoryId as string ?? '').slice(0, 8)}… · weight boosted`;
+    case 'consolidate.cluster':
+      return `▸ SCHEMA FORMATION · ${(ev.payload.rulesSynthesized as number ?? 1)} rule(s) synthesized`;
+    case 'decay.run':
+      return `▸ DECAY PASS · ran=${ev.payload.ran ?? false}`;
+    case 'arousal.change':
+      return `▸ AROUSAL · ${(ev.payload.arousal as number ?? 0).toFixed(2)}`;
+    default:
+      return `▸ ${ev.kind}`;
+  }
+}
 
 function EventTicker({ booted }: { booted: boolean }) {
-  const [items, setItems] = useState<string[]>(() => [TICKER_EVENTS[0]()]);
+  const { events } = useBrainStream(booted);
+  const [items, setItems] = useState<string[]>(() => ['▸ awaiting brain events…']);
   useEffect(() => {
     if (!booted) return;
-    const iv = window.setInterval(() => {
-      setItems((prev) => [...prev.slice(-2), TICKER_EVENTS[Math.floor(Math.random() * TICKER_EVENTS.length)]()]);
-    }, 5000);
-    return () => window.clearInterval(iv);
-  }, [booted]);
+    // Each new brain event adds a ticker line (most-recent first, bounded).
+    if (events.length === 0) return;
+    const latest = events[events.length - 1]!;
+    setItems((prev) => [...prev.slice(-2), formatBrainEvent(latest)]);
+  }, [events, booted]);
   return (
     <div className="flex min-w-0 flex-1 items-center gap-4 overflow-hidden font-mono text-[11px] text-mid">
       <AnimatePresence initial={false} mode="popLayout">
