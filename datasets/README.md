@@ -31,13 +31,16 @@ The dataset trains models on three interconnected capabilities:
 
 | Metric | Value |
 |--------|-------|
-| Total examples | 81 |
-| Single-turn conversations | 77 |
-| Multi-turn conversations | 4 |
-| Estimated total tokens | ~100K |
-| Average tokens per example | ~1,200 |
+| Total examples | 364 |
+| Single-turn conversations | 354 |
+| Multi-turn conversations | 10 |
+| Estimated total tokens | ~421K |
+| Average tokens per example | ~1,158 |
+| File size | ~1.7 MB |
 
 ## Categories Covered
+
+### Core Dataset (81 examples)
 
 | # | Category | Examples | Description |
 |---|----------|----------|-------------|
@@ -55,6 +58,66 @@ The dataset trains models on three interconnected capabilities:
 | 12 | Advanced Multi-Turn | 4 | Full workflow cycles, debugging with progressive memory, user corrections |
 | 13 | Project Type Variations | 4 | SaaS, CLI, Library, Agentic Harness |
 | 14 | Anti-Pattern Prevention | 3 | Orchestrator-as-worker, scope creep, assumption without escalation |
+
+### Comprehensive Expansion (71 examples)
+
+| # | Category | Examples | Description |
+|---|----------|----------|-------------|
+| 15 | Meta Knowledge | 10 | What is Anymake, who created it, URL, installation, why it exists, comparison to other tools |
+| 16 | Orchestrator Deep-Dive | 3 | Step 0 capability check, full orchestration loop, board maintenance |
+| 17 | Planner Examples | 2 | Experience script authoring, BLOCKED brief handling |
+| 18 | Validator & Experience Runner | 2 | Criterion classification, observe-never-fix cardinal rule |
+| 19 | RealMemory Per-Tool (2 each) | 12 | Detailed examples of every MCP tool with realistic parameters |
+| 20 | RealMemory Architecture | 3 | Reflex vs deliberative paths, weight formula, ONNX embeddings |
+| 21 | Workflow Scenarios | 6 | End-to-end builds: SaaS, CLI, brownfield, API migration |
+| 22 | Anti-Patterns & Corrections | 6 | Orchestrator-as-worker, skipping gates, assumption without recall |
+| 23 | Session & State Management | 2 | PHASE_STATE.md lifecycle, session log entries |
+| 24 | Multi-Turn Conversations | 4 | Progressive debugging, user corrections, phase transitions |
+| 25 | Post-Launch & Agile | 2 | Bug intake with anymake-agile, sprint planning |
+| 26 | Skill Invocation | 3 | anymake-build-loop, anymake-security-review, anymake-experience-check |
+| 27 | Autonomous Mode | 2 | When to use, gate handling in autonomous mode |
+| 28 | Advanced Memory Patterns | 2 | Memory consolidation, contradiction resolution |
+| 29 | Gate Management Deep-Dive | 2 | Product Owner Proxy, autonomous gate progression |
+| 30 | Brain Subsystems | 2 | Arousal signals, prediction error triggers |
+| 31 | Experience Validation | 2 | Browser mode scripts, verdict decision tree |
+| 32 | Project Type Workflows | 2 | Type-specific build orders and harness modes |
+| 33 | Conventions & Patterns | 1 | CONVENTIONS.md usage and enforcement |
+| 34 | Complete Session Flows | 2 | Full session lifecycle from startup to clean exit |
+
+### Agent Deep-Dive Expansion (50 examples)
+
+| # | Category | Examples | Description |
+|---|----------|----------|-------------|
+| 35 | Meta Knowledge Extended | 10 | System overview, installation, creator, problems solved, differentiators |
+| 36 | Agent Deep Dives | 20 | 2 per agent across all 10 agents (role/restrictions + practical scenario) |
+| 37 | Orchestration Patterns | 10 | Startup, BLOCKED briefs, failure types, security escalation, loop completion |
+| 38 | Arbiter Policy | 10 | PR review rules, retry policies, intent conflicts, failure classification |
+
+### Skills & Project Types Expansion (49 examples)
+
+| # | Category | Examples | Description |
+|---|----------|----------|-------------|
+| 39 | Skill Deep Dives | ~22 | 2 per skill across all 11 skills (trigger + workflow) |
+| 40 | Project Type Deep Dives | ~16 | 2 per project type across all 8 types (config + workflow) |
+| 41 | Template Coverage | ~11 | Individual template generation and usage examples |
+
+### Phases & Templates Expansion (43 examples)
+
+| # | Category | Examples | Description |
+|---|----------|----------|-------------|
+| 47 | Phase Deep Dives | ~12 | 2 per phase (0-5) with detailed artifacts and gate criteria |
+| 48 | Template Generation | ~25 | Individual template usage for key Anymake templates |
+| 49 | Phase Transition Scenarios | ~6 | Gate progression, phase rollback, autonomous advancement |
+
+### RealMemory Deep-Dive Expansion (70 examples)
+
+| # | Category | Examples | Description |
+|---|----------|----------|-------------|
+| 42 | RealMemory Tool Mastery | ~24 | 2 per tool with detailed parameter usage and response handling |
+| 43 | Memory Type Patterns | ~14 | 2 per memory type with proper scope/confidence/tags |
+| 44 | Brain Architecture | ~14 | 2 per subsystem (perception, working memory, inhibition, arousal, prediction error, consolidation, deliberate recall) |
+| 45 | Advanced Memory Workflows | ~8 | Contradiction resolution, consolidation, relationship graphs, memory maintenance |
+| 46 | Multi-Turn Memory Scenarios | ~10 | Progressive recall, correction handling, session-spanning memory evolution |
 
 ## Key Patterns in Each Example
 
@@ -156,9 +219,15 @@ sequence_len: 4096
 
 ## Generation
 
-The dataset is generated by three Python scripts in this directory:
-- `generate_lora_dataset.py` — Core examples (53)
-- `generate_advanced_examples.py` — Advanced patterns (17)
-- `generate_multiturn_examples.py` — Multi-turn conversations (11)
+The dataset is generated by multiple Python scripts in this directory:
 
-Run all three to regenerate: `python3 generate_lora_dataset.py && python3 generate_advanced_examples.py && python3 generate_multiturn_examples.py`
+| Script | Output | Examples |
+|--------|--------|----------|
+| `generate_lora_dataset.py` | `agentic-workflow-lora-training.jsonl` (base) | 53 |
+| `generate_advanced_examples.py` | Appends to base | 17 |
+| `generate_multiturn_examples.py` | Appends to base | 11 |
+| `generate_comprehensive_expansion.py` | `comprehensive_expansion.jsonl` | 71 |
+
+The `part1_agents_core.jsonl`, `part2_phases_templates.jsonl`, `part3_skills_types.jsonl`, and `part4_realmemory.jsonl` files contain agent deep-dives, phases/templates, skills/project types, and RealMemory-focused examples respectively.
+
+All part files are merged into the final `agentic-workflow-lora-training.jsonl` (364 examples total).
