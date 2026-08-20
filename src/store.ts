@@ -794,6 +794,25 @@ export class MemoryStore {
   }
 
   /**
+   * Archive (soft-delete) every active memory of a given type. Used by
+   * `--reset-self --identity` (Phase 10 Gate 1) to forget all self_model
+   * dispositions without touching the rest of the store. Returns the count of
+   * rows archived. Idempotent — already-archived rows are skipped. Does not
+   * cascade relationships (self_model rows rarely have any); a follow-up pass
+   * could, but the reset semantics are "forget the self," not "orphan-clean."
+   */
+  async archiveByType(type: MemoryType): Promise<number> {
+    const db = this.requireDb();
+    const now = new Date().toISOString();
+    const info = db
+      .prepare(
+        "UPDATE memories SET status = 'archived', updated_at = ? WHERE type = ? AND status = 'active'",
+      )
+      .run(now, type);
+    return info.changes ?? 0;
+  }
+
+  /**
    * Recall memories relevant to a natural-language query. Uses semantic
    * (cosine-similarity) recall when an embedding provider is available, and
    * falls back to FTS5 keyword (bm25) recall otherwise. Results are ranked by

@@ -310,3 +310,45 @@ describe("brain.schemaFormation validation (Phase 6)", () => {
     );
   });
 });
+
+describe("brain.traits + brain.traitLearningRate validation (Phase 10)", () => {
+  it("accepts traits true/false", () => {
+    expect(() => validateConfig({ brain: { traits: true } })).not.toThrow();
+    expect(() => validateConfig({ brain: { traits: false } })).not.toThrow();
+  });
+
+  it("accepts undefined traits (defaults to false)", () => {
+    expect(() => validateConfig({})).not.toThrow();
+    expect(() => validateConfig({ brain: {} })).not.toThrow();
+  });
+
+  it("rejects non-boolean traits", () => {
+    expect(() =>
+      validateConfig({ brain: { traits: "yes" as unknown as boolean } }),
+    ).toThrow(/brain.traits must be a boolean/);
+  });
+
+  it("accepts traitLearningRate in [0, 0.05]", () => {
+    expect(() => validateConfig({ brain: { traitLearningRate: 0 } })).not.toThrow();
+    expect(() => validateConfig({ brain: { traitLearningRate: 0.02 } })).not.toThrow();
+    expect(() => validateConfig({ brain: { traitLearningRate: 0.05 } })).not.toThrow();
+  });
+
+  it("rejects traitLearningRate above 0.05", () => {
+    expect(() =>
+      validateConfig({ brain: { traitLearningRate: 0.06 } }),
+    ).toThrow(/brain.traitLearningRate must be a number in \[0, 0\.05\]/);
+  });
+
+  it("rejects negative traitLearningRate", () => {
+    expect(() =>
+      validateConfig({ brain: { traitLearningRate: -0.01 } }),
+    ).toThrow(/brain.traitLearningRate must be a number in \[0, 0\.05\]/);
+  });
+
+  it("rejects non-number traitLearningRate", () => {
+    expect(() =>
+      validateConfig({ brain: { traitLearningRate: "fast" as unknown as number } }),
+    ).toThrow(/brain.traitLearningRate must be a number in \[0, 0\.05\]/);
+  });
+});

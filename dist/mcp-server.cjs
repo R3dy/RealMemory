@@ -514,6 +514,16 @@ function validateConfig(config) {
       throw new Error("brain.identityTokens must be a number in [100, 1000]");
     }
   }
+  if (config.brain?.traits !== void 0 && typeof config.brain.traits !== "boolean") {
+    throw new Error("brain.traits must be a boolean");
+  }
+  if (config.brain?.traitLearningRate !== void 0) {
+    if (typeof config.brain.traitLearningRate !== "number" || config.brain.traitLearningRate < 0 || config.brain.traitLearningRate > 0.05) {
+      throw new Error(
+        "brain.traitLearningRate must be a number in [0, 0.05]"
+      );
+    }
+  }
 }
 function readJsonFile(path) {
   const content = (0, import_node_fs.readFileSync)(path, "utf-8");
@@ -1131,6 +1141,22 @@ var MemoryStore = class {
     );
     db.prepare("DELETE FROM relationships WHERE source_id = ? OR target_id = ?").run(id, id);
     return { id, archived: true, relationshipsRemoved };
+  }
+  /**
+   * Archive (soft-delete) every active memory of a given type. Used by
+   * `--reset-self --identity` (Phase 10 Gate 1) to forget all self_model
+   * dispositions without touching the rest of the store. Returns the count of
+   * rows archived. Idempotent — already-archived rows are skipped. Does not
+   * cascade relationships (self_model rows rarely have any); a follow-up pass
+   * could, but the reset semantics are "forget the self," not "orphan-clean."
+   */
+  async archiveByType(type) {
+    const db = this.requireDb();
+    const now = (/* @__PURE__ */ new Date()).toISOString();
+    const info = db.prepare(
+      "UPDATE memories SET status = 'archived', updated_at = ? WHERE type = ? AND status = 'active'"
+    ).run(now, type);
+    return info.changes ?? 0;
   }
   /**
    * Recall memories relevant to a natural-language query. Uses semantic
@@ -2248,7 +2274,7 @@ async function handleRequest(req, res, store, uiDir) {
     return;
   }
   if (pathname === "/version") {
-    sendJson(res, 200, { version: "0.17.0" });
+    sendJson(res, 200, { version: "0.19.0" });
     return;
   }
   if (pathname === "/api/stats") {
@@ -2798,7 +2824,7 @@ function createMcpTools(store) {
   ];
 }
 var SERVER_NAME = "realmemory";
-var SERVER_VERSION = "0.17.0";
+var SERVER_VERSION = "0.19.0";
 async function startMcpServer(config, opts) {
   const mergedConfig = config ?? loadConfig();
   const ownLifecycle = opts?.ownLifecycle ?? false;

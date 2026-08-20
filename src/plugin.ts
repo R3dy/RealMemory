@@ -6,6 +6,13 @@ import type { Intent, ToolCapture } from "./brain-loop";
 import { emit, flush, configureBrainEvents } from "./brain-events";
 import { recordSelfEpisode, assembleIdentity } from "./self";
 import {
+  loadTraits,
+  saveTraits,
+  updateTraits,
+  type TraitObservations,
+  type TraitVector,
+} from "./traits";
+import {
   createProbeState,
   resetProbeForSession,
   resolveHostVersion,
@@ -673,6 +680,98 @@ export default async function realmemoryPlugin(
                 }
               } catch (selfErr) {
                 // Fire-safe — self-episodes must never break session.idle.
+              }
+              // Synthetic-self Phase 10: trait drift. OPT-IN — gated on
+              // brain.traits (default false). Runs once per session at idle on
+              // the deliberative path (ADR-010). Computes per-trait observations
+              // from this session's state, applies the EMA update, persists,
+              // emits trait.drift events, and writes a self_model row when a
+              // trait crosses a 0.1 boundary.
+              const brainCfg = (state.config as { brain?: { traits?: boolean; traitLearningRate?: number } }).brain;
+              if (brainCfg?.traits === true) {
+                try {
+                  const traits = await loadTraits(store);
+                  // Compute observations from session state (each in [0,1]).
+                  // Missing evidence -> null (trait pulled toward 0.5).
+                  const obs: TraitObservations = {};
+                  // caution: rises on corrections + blocks that stuck.
+                  let cautionSignals = 0;
+                  let cautionN = 0;
+                  if (state.lastUserIntent === "correction") {
+                    cautionSignals += 1;
+                    cautionN += 1;
+                  }
+                  if (state.lastBlock) {
+                    cautionSignals += 1;
+                    cautionN += 1;
+                  }
+                  if (state.lastPredictionOutcome && state.lastPredictionOutcome.surprise >= 0.5) {
+                    cautionSignals += 1;
+                    cautionN += 1;
+                  }
+                  obs.caution = cautionN > 0 ? cautionSignals / cautionN : null;
+                  // curiosity: high when reflex cache existed but few blocks fired
+                  // (exploration over inhibition). Proxy: no blocks this session.
+                  obs.curiosity = state.lastBlock ? 0.3 : 0.6;
+                  // skepticism: from duplicate rate — high dup rate -> high skepticism.
+                  // (No cheap per-session dup counter today; leave neutral for now.)
+                  obs.skepticism = null;
+                  // tenacity: from recall hits — if injected memories were useful,
+                  // old memories keep proving useful.
+                  if (state.lastInjectedMemoryIds && state.lastInjectedMemoryIds.length > 0) {
+                    obs.tenacity = 0.7;
+                  } else {
+                    obs.tenacity = null;
+                  }
+                  // thoroughness: from working-memory token budget usage.
+                  obs.thoroughness = null; // wired when WM instrumentation lands
+                  // tempo: from correction density about verbosity.
+                  obs.tempo =
+                    state.lastUserIntent === "correction" && state.lastUserText
+                      ? 0.3
+                      : null;
+                  const alpha = brainCfg.traitLearningRate ?? 0.02;
+                  const { vector, results } = updateTraits(traits, obs, alpha);
+                  await saveTraits(store, vector);
+                  // Emit trait.drift for every trait that moved + boundary self_model rows.
+                  for (const r of results) {
+                    if (Math.abs(r.delta) > 0) {
+                      emit("trait.drift", {
+                        trait: r.name,
+                        before: Number(r.before.toFixed(4)),
+                        after: Number(r.after.toFixed(4)),
+                        delta: Number(r.delta.toFixed(4)),
+                        observed: r.observed,
+                        boundary: r.crossedBoundary,
+                      });
+                    }
+                    if (r.crossedBoundary) {
+                      try {
+                        await store.store({
+                          content: `My ${r.name} trait drifted from ${r.before.toFixed(2)} to ${r.after.toFixed(2)} this session${r.observed !== null ? ` (observed ${r.observed.toFixed(2)})` : " (no evidence — pulled toward baseline)"}.`,
+                          type: "self_model",
+                          scope: "project",
+                          confidence: 0.45,
+                          tags: ["self-episode", "trait-drift", r.name],
+                          metadata: {
+                            category: "disposition",
+                            trait: r.name,
+                            before: r.before,
+                            after: r.after,
+                            observed: r.observed,
+                            source: "trait-drift",
+                          } as Record<string, unknown>,
+                        });
+                      } catch {
+                        // Fire-safe — boundary self_model must never break idle.
+                      }
+                    }
+                  }
+                  // Flush the trait.drift events (detached).
+                  await flush(store).catch(() => {});
+                } catch (traitErr) {
+                  // Fire-safe — trait drift must never break session.idle.
+                }
               }
             })().catch((error) =>
               log(

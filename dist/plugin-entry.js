@@ -6,7 +6,7 @@ import {
   recordLandsOutcome,
   resetProbeForSession,
   resolveHostVersion
-} from "./chunk-2YFWJ2M7.js";
+} from "./chunk-5CQTOMYQ.js";
 import {
   classifyIntent,
   deriveProjectId,
@@ -16,7 +16,12 @@ import {
 import {
   MemoryStore,
   loadConfig
-} from "./chunk-FCXSIM65.js";
+} from "./chunk-YHOE5GO2.js";
+import {
+  loadTraits,
+  saveTraits,
+  updateTraits
+} from "./chunk-5H4UUIRU.js";
 import "./chunk-B5S5KXU7.js";
 
 // src/brain-events.ts
@@ -33,7 +38,8 @@ var BRAIN_EVENT_KINDS = [
   "encode.reinforced",
   "consolidate.cluster",
   "decay.run",
-  "arousal.change"
+  "arousal.change",
+  "trait.drift"
 ];
 var KIND_SET = new Set(BRAIN_EVENT_KINDS);
 var ring = null;
@@ -1224,6 +1230,75 @@ async function realmemoryPlugin(ctx) {
                   await log("debug", `Self-episode: recorded ${selfCount} self_model rows`);
                 }
               } catch (selfErr) {
+              }
+              const brainCfg = state.config.brain;
+              if (brainCfg?.traits === true) {
+                try {
+                  const traits = await loadTraits(store);
+                  const obs = {};
+                  let cautionSignals = 0;
+                  let cautionN = 0;
+                  if (state.lastUserIntent === "correction") {
+                    cautionSignals += 1;
+                    cautionN += 1;
+                  }
+                  if (state.lastBlock) {
+                    cautionSignals += 1;
+                    cautionN += 1;
+                  }
+                  if (state.lastPredictionOutcome && state.lastPredictionOutcome.surprise >= 0.5) {
+                    cautionSignals += 1;
+                    cautionN += 1;
+                  }
+                  obs.caution = cautionN > 0 ? cautionSignals / cautionN : null;
+                  obs.curiosity = state.lastBlock ? 0.3 : 0.6;
+                  obs.skepticism = null;
+                  if (state.lastInjectedMemoryIds && state.lastInjectedMemoryIds.length > 0) {
+                    obs.tenacity = 0.7;
+                  } else {
+                    obs.tenacity = null;
+                  }
+                  obs.thoroughness = null;
+                  obs.tempo = state.lastUserIntent === "correction" && state.lastUserText ? 0.3 : null;
+                  const alpha = brainCfg.traitLearningRate ?? 0.02;
+                  const { vector, results } = updateTraits(traits, obs, alpha);
+                  await saveTraits(store, vector);
+                  for (const r of results) {
+                    if (Math.abs(r.delta) > 0) {
+                      emit("trait.drift", {
+                        trait: r.name,
+                        before: Number(r.before.toFixed(4)),
+                        after: Number(r.after.toFixed(4)),
+                        delta: Number(r.delta.toFixed(4)),
+                        observed: r.observed,
+                        boundary: r.crossedBoundary
+                      });
+                    }
+                    if (r.crossedBoundary) {
+                      try {
+                        await store.store({
+                          content: `My ${r.name} trait drifted from ${r.before.toFixed(2)} to ${r.after.toFixed(2)} this session${r.observed !== null ? ` (observed ${r.observed.toFixed(2)})` : " (no evidence \u2014 pulled toward baseline)"}.`,
+                          type: "self_model",
+                          scope: "project",
+                          confidence: 0.45,
+                          tags: ["self-episode", "trait-drift", r.name],
+                          metadata: {
+                            category: "disposition",
+                            trait: r.name,
+                            before: r.before,
+                            after: r.after,
+                            observed: r.observed,
+                            source: "trait-drift"
+                          }
+                        });
+                      } catch {
+                      }
+                    }
+                  }
+                  await flush(store).catch(() => {
+                  });
+                } catch (traitErr) {
+                }
               }
             })().catch(
               (error) => log(

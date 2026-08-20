@@ -516,6 +516,16 @@ function validateConfig(config) {
       throw new Error("brain.identityTokens must be a number in [100, 1000]");
     }
   }
+  if (config.brain?.traits !== void 0 && typeof config.brain.traits !== "boolean") {
+    throw new Error("brain.traits must be a boolean");
+  }
+  if (config.brain?.traitLearningRate !== void 0) {
+    if (typeof config.brain.traitLearningRate !== "number" || config.brain.traitLearningRate < 0 || config.brain.traitLearningRate > 0.05) {
+      throw new Error(
+        "brain.traitLearningRate must be a number in [0, 0.05]"
+      );
+    }
+  }
 }
 function readJsonFile(path) {
   const content = (0, import_node_fs.readFileSync)(path, "utf-8");
@@ -1133,6 +1143,22 @@ var MemoryStore = class {
     );
     db.prepare("DELETE FROM relationships WHERE source_id = ? OR target_id = ?").run(id, id);
     return { id, archived: true, relationshipsRemoved };
+  }
+  /**
+   * Archive (soft-delete) every active memory of a given type. Used by
+   * `--reset-self --identity` (Phase 10 Gate 1) to forget all self_model
+   * dispositions without touching the rest of the store. Returns the count of
+   * rows archived. Idempotent — already-archived rows are skipped. Does not
+   * cascade relationships (self_model rows rarely have any); a follow-up pass
+   * could, but the reset semantics are "forget the self," not "orphan-clean."
+   */
+  async archiveByType(type) {
+    const db = this.requireDb();
+    const now = (/* @__PURE__ */ new Date()).toISOString();
+    const info = db.prepare(
+      "UPDATE memories SET status = 'archived', updated_at = ? WHERE type = ? AND status = 'active'"
+    ).run(now, type);
+    return info.changes ?? 0;
   }
   /**
    * Recall memories relevant to a natural-language query. Uses semantic
@@ -2250,7 +2276,7 @@ async function handleRequest(req, res, store, uiDir) {
     return;
   }
   if (pathname === "/version") {
-    sendJson(res, 200, { version: "0.17.0" });
+    sendJson(res, 200, { version: "0.19.0" });
     return;
   }
   if (pathname === "/api/stats") {
@@ -2800,7 +2826,7 @@ function createMcpTools(store) {
   ];
 }
 var SERVER_NAME = "realmemory";
-var SERVER_VERSION = "0.17.0";
+var SERVER_VERSION = "0.19.0";
 async function startMcpServer(config, opts) {
   const mergedConfig = config ?? loadConfig();
   const ownLifecycle = opts?.ownLifecycle ?? false;
@@ -3112,12 +3138,47 @@ DEGRADED: the following always-fire hooks registered 0 fires despite
   return 0;
 }
 
+// src/traits.ts
+var BASELINE_TRAITS = {
+  caution: 0.5,
+  curiosity: 0.5,
+  skepticism: 0.5,
+  tenacity: 0.5,
+  thoroughness: 0.5,
+  tempo: 0.5
+};
+var TRAITS_META_KEY = "traits:v1";
+function baselineTraits() {
+  return { ...BASELINE_TRAITS };
+}
+async function saveTraits(store, traits) {
+  try {
+    await store.setMeta(TRAITS_META_KEY, JSON.stringify(traits));
+  } catch {
+  }
+}
+async function resetTraits(store) {
+  const baseline = baselineTraits();
+  await saveTraits(store, baseline);
+  return baseline;
+}
+function parseResetScope(args) {
+  for (const a of args) {
+    if (a === "--reset-self" || a === "--reset-self=all") return "all";
+    if (a === "--reset-self=traits" || a === "--traits") return "traits";
+    if (a === "--reset-self=affect" || a === "--affect") return "affect";
+    if (a === "--reset-self=identity" || a === "--identity") return "identity";
+  }
+  return null;
+}
+
 // src/bin.ts
 function parseArgs(argv) {
   let ui2 = false;
   let port2 = 9333;
   let noBrowser2 = false;
   let doctor2 = false;
+  let resetSelf2 = null;
   for (const a of argv.slice(2)) {
     if (a === "--ui") {
       ui2 = true;
@@ -3134,10 +3195,70 @@ function parseArgs(argv) {
       doctor2 = true;
     }
   }
-  return { ui: ui2, port: port2, noBrowser: noBrowser2, doctor: doctor2 };
+  resetSelf2 = parseResetScope(argv);
+  return { ui: ui2, port: port2, noBrowser: noBrowser2, doctor: doctor2, resetSelf: resetSelf2 };
 }
-var { ui, port, noBrowser, doctor } = parseArgs(process.argv);
-if (doctor) {
+var { ui, port, noBrowser, doctor, resetSelf } = parseArgs(process.argv);
+if (resetSelf) {
+  const config = loadConfig();
+  const store = new MemoryStore(config);
+  store.init().then(async () => {
+    const scope = resetSelf;
+    let report = [];
+    if (scope === "traits" || scope === "all") {
+      const before = await store.getMeta(TRAITS_META_KEY);
+      const after = await resetTraits(store);
+      report.push(
+        `traits: reset to baseline ${JSON.stringify(after)}` + (before ? ` (was ${before})` : " (was baseline \u2014 no-op)")
+      );
+      try {
+        await store.store({
+          content: `I reset my trait vector to baseline (${scope}). ${before ? "Previous traits were drifted." : "No prior drift existed."}`,
+          type: "self_model",
+          scope: "project",
+          confidence: 0.7,
+          tags: ["self-episode", "reset-self", scope],
+          metadata: {
+            category: "commitment",
+            scope,
+            before: before ?? null,
+            after,
+            source: "reset-self"
+          }
+        });
+      } catch {
+      }
+    }
+    if (scope === "affect" || scope === "all") {
+      try {
+        await store.setMeta("affect:v1", "");
+        report.push("affect: cleared (Phase 11 not yet shipped \u2014 no-op if empty)");
+      } catch {
+      }
+    }
+    if (scope === "identity" || scope === "all") {
+      try {
+        const archived = await store.archiveByType("self_model");
+        report.push(
+          `identity: archived ${archived} self_model memories`
+        );
+      } catch {
+        report.push("identity: reset attempted (store method missing \u2014 non-fatal)");
+      }
+    }
+    for (const line of report) {
+      console.log(`[realmemory reset-self] ${line}`);
+    }
+    return store.close();
+  }).then(() => {
+    process.exit(0);
+  }).catch((err) => {
+    console.error(
+      `realmemory reset-self: ${err instanceof Error ? err.message : String(err)}`
+    );
+    process.exit(1);
+  });
+} else if (doctor) {
   let exitCode = 0;
   const config = loadConfig();
   const store = new MemoryStore(config);
