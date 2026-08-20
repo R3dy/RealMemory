@@ -1,6 +1,8 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo } from 'react';
 import * as THREE from 'three';
 import { getBrainGeometries } from './brain-mesh';
+import { useUiStore } from '@/lib/ui-store';
+import { glowScale } from '@/lib/glow';
 
 /**
  * Translucent anatomical brain shell — arc-reactor cyan fresnel rim glow +
@@ -25,12 +27,13 @@ const FRESNEL_FRAG = /* glsl */ `
   uniform vec3 uColor;
   uniform float uIntensity;
   uniform float uPower;
+  uniform float uGlow;
   varying vec3 vNormal;
   varying vec3 vView;
   void main() {
     float f = pow(1.0 - abs(dot(normalize(vNormal), normalize(vView))), uPower);
     vec3 col = uColor * (f * uIntensity + 0.015);
-    gl_FragColor = vec4(col, 1.0);
+    gl_FragColor = vec4(col * uGlow, 1.0);
   }
 `;
 
@@ -42,6 +45,11 @@ function makeFresnelMaterial(color: string, intensity: number, power: number) {
       uColor: { value: new THREE.Color(color) },
       uIntensity: { value: intensity },
       uPower: { value: power },
+      // uGlow scales the whole fresnel output (rim + 0.015 floor) linearly.
+      // At uGlow=0 the floor collapses to 0 → true zero glow on the shell.
+      // uIntensity is NOT scaled (would double-scale as g² on the rim); uGlow
+      // is the sole fresnel scaler. Default 1.0 = bit-identical to pre-slider.
+      uGlow: { value: 1.0 },
     },
     transparent: true,
     blending: THREE.AdditiveBlending,
@@ -54,6 +62,8 @@ const noRaycast = () => null;
 
 export default function BrainShell() {
   const geo = useMemo(() => getBrainGeometries(), []);
+  const { glowIntensity } = useUiStore();
+  const g = glowScale(glowIntensity);
   const materials = useMemo(
     () => ({
       cerebrum: makeFresnelMaterial('#00d4ff', 1.5, 2.4),
@@ -80,6 +90,17 @@ export default function BrainShell() {
     }),
     [],
   );
+
+  // C4 fix: mutate fresnel uGlow + wireframe opacities when the slider moves.
+  // uIntensity stays at base (uGlow is the sole fresnel scaler — avoids g²).
+  // No material recreation — cheap uniform/opacity writes.
+  useEffect(() => {
+    materials.cerebrum.uniforms.uGlow.value = glowIntensity;
+    materials.cerebellum.uniforms.uGlow.value = glowIntensity;
+    materials.stem.uniforms.uGlow.value = glowIntensity;
+    materials.wireCerebrum.opacity = g.wireCerebrum;
+    materials.wireSub.opacity = g.wireSub;
+  }, [glowIntensity, g.wireCerebrum, g.wireSub, materials]);
 
   return (
     <group>

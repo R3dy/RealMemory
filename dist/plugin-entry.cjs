@@ -651,6 +651,16 @@ function validateConfig(config) {
       throw new Error("brain.identityTokens must be a number in [100, 1000]");
     }
   }
+  if (config.brain?.traits !== void 0 && typeof config.brain.traits !== "boolean") {
+    throw new Error("brain.traits must be a boolean");
+  }
+  if (config.brain?.traitLearningRate !== void 0) {
+    if (typeof config.brain.traitLearningRate !== "number" || config.brain.traitLearningRate < 0 || config.brain.traitLearningRate > 0.05) {
+      throw new Error(
+        "brain.traitLearningRate must be a number in [0, 0.05]"
+      );
+    }
+  }
 }
 function readJsonFile(path) {
   const content = (0, import_node_fs.readFileSync)(path, "utf-8");
@@ -1244,6 +1254,22 @@ var MemoryStore = class {
     );
     db.prepare("DELETE FROM relationships WHERE source_id = ? OR target_id = ?").run(id, id);
     return { id, archived: true, relationshipsRemoved };
+  }
+  /**
+   * Archive (soft-delete) every active memory of a given type. Used by
+   * `--reset-self --identity` (Phase 10 Gate 1) to forget all self_model
+   * dispositions without touching the rest of the store. Returns the count of
+   * rows archived. Idempotent — already-archived rows are skipped. Does not
+   * cascade relationships (self_model rows rarely have any); a follow-up pass
+   * could, but the reset semantics are "forget the self," not "orphan-clean."
+   */
+  async archiveByType(type) {
+    const db = this.requireDb();
+    const now = (/* @__PURE__ */ new Date()).toISOString();
+    const info = db.prepare(
+      "UPDATE memories SET status = 'archived', updated_at = ? WHERE type = ? AND status = 'active'"
+    ).run(now, type);
+    return info.changes ?? 0;
   }
   /**
    * Recall memories relevant to a natural-language query. Uses semantic
@@ -2388,7 +2414,8 @@ var BRAIN_EVENT_KINDS = [
   "encode.reinforced",
   "consolidate.cluster",
   "decay.run",
-  "arousal.change"
+  "arousal.change",
+  "trait.drift"
 ];
 var KIND_SET = new Set(BRAIN_EVENT_KINDS);
 var ring = null;
@@ -2665,6 +2692,105 @@ async function assembleIdentity(store, opts = {}) {
     content: lines.join("\n"),
     memoryIds
   };
+}
+
+// src/traits.ts
+var TRAIT_NAMES = [
+  "caution",
+  "curiosity",
+  "skepticism",
+  "tenacity",
+  "thoroughness",
+  "tempo"
+];
+var BASELINE_TRAITS = {
+  caution: 0.5,
+  curiosity: 0.5,
+  skepticism: 0.5,
+  tenacity: 0.5,
+  thoroughness: 0.5,
+  tempo: 0.5
+};
+var TRAITS_META_KEY = "traits:v1";
+var TRAIT_MIN = 0.15;
+var TRAIT_MAX = 0.85;
+var DEFAULT_TRAIT_LEARNING_RATE = 0.02;
+var MAX_TRAIT_LEARNING_RATE = 0.05;
+var DECAY_TOWARD_BASELINE = 2e-3;
+var BOUNDARY_BUCKET = 0.1;
+function clampTrait(value) {
+  if (!Number.isFinite(value)) return 0.5;
+  return Math.min(TRAIT_MAX, Math.max(TRAIT_MIN, value));
+}
+function isTraitVector(v) {
+  if (typeof v !== "object" || v === null) return false;
+  const o = v;
+  for (const name of TRAIT_NAMES) {
+    const val = o[name];
+    if (typeof val !== "number" || !Number.isFinite(val)) return false;
+  }
+  return true;
+}
+function baselineTraits() {
+  return { ...BASELINE_TRAITS };
+}
+async function loadTraits(store) {
+  try {
+    const raw = await store.getMeta(TRAITS_META_KEY);
+    if (!raw) return baselineTraits();
+    const parsed = JSON.parse(raw);
+    if (!isTraitVector(parsed)) return baselineTraits();
+    const out = baselineTraits();
+    for (const name of TRAIT_NAMES) {
+      out[name] = clampTrait(parsed[name]);
+    }
+    return out;
+  } catch {
+    return baselineTraits();
+  }
+}
+async function saveTraits(store, traits) {
+  try {
+    await store.setMeta(TRAITS_META_KEY, JSON.stringify(traits));
+  } catch {
+  }
+}
+function updateOneTrait(before, observed, alpha) {
+  const a = Math.min(MAX_TRAIT_LEARNING_RATE, Math.max(0, alpha));
+  if (observed === null || !Number.isFinite(observed)) {
+    const towardBaseline = before + DECAY_TOWARD_BASELINE * (0.5 - before);
+    const after2 = clampTrait(towardBaseline);
+    return { after: after2, delta: after2 - before };
+  }
+  const clampedObs = Math.min(1, Math.max(0, observed));
+  const updated = before + a * (clampedObs - before);
+  const after = clampTrait(updated);
+  return { after, delta: after - before };
+}
+function crossedBoundaryBucket(before, after) {
+  if (!Number.isFinite(before) || !Number.isFinite(after)) return false;
+  const b = Math.floor(before / BOUNDARY_BUCKET);
+  const a = Math.floor(after / BOUNDARY_BUCKET);
+  return b !== a;
+}
+function updateTraits(traits, obs, alpha = DEFAULT_TRAIT_LEARNING_RATE) {
+  const vector = { ...traits };
+  const results = [];
+  for (const name of TRAIT_NAMES) {
+    const before = vector[name];
+    const observed = obs[name] ?? null;
+    const { after, delta } = updateOneTrait(before, observed, alpha);
+    vector[name] = after;
+    results.push({
+      name,
+      before,
+      after,
+      observed,
+      delta,
+      crossedBoundary: crossedBoundaryBucket(before, after)
+    });
+  }
+  return { vector, results };
 }
 
 // src/hook-probe.ts
@@ -3726,6 +3852,75 @@ async function realmemoryPlugin(ctx) {
                   await log("debug", `Self-episode: recorded ${selfCount} self_model rows`);
                 }
               } catch (selfErr) {
+              }
+              const brainCfg = state.config.brain;
+              if (brainCfg?.traits === true) {
+                try {
+                  const traits = await loadTraits(store);
+                  const obs = {};
+                  let cautionSignals = 0;
+                  let cautionN = 0;
+                  if (state.lastUserIntent === "correction") {
+                    cautionSignals += 1;
+                    cautionN += 1;
+                  }
+                  if (state.lastBlock) {
+                    cautionSignals += 1;
+                    cautionN += 1;
+                  }
+                  if (state.lastPredictionOutcome && state.lastPredictionOutcome.surprise >= 0.5) {
+                    cautionSignals += 1;
+                    cautionN += 1;
+                  }
+                  obs.caution = cautionN > 0 ? cautionSignals / cautionN : null;
+                  obs.curiosity = state.lastBlock ? 0.3 : 0.6;
+                  obs.skepticism = null;
+                  if (state.lastInjectedMemoryIds && state.lastInjectedMemoryIds.length > 0) {
+                    obs.tenacity = 0.7;
+                  } else {
+                    obs.tenacity = null;
+                  }
+                  obs.thoroughness = null;
+                  obs.tempo = state.lastUserIntent === "correction" && state.lastUserText ? 0.3 : null;
+                  const alpha = brainCfg.traitLearningRate ?? 0.02;
+                  const { vector, results } = updateTraits(traits, obs, alpha);
+                  await saveTraits(store, vector);
+                  for (const r of results) {
+                    if (Math.abs(r.delta) > 0) {
+                      emit("trait.drift", {
+                        trait: r.name,
+                        before: Number(r.before.toFixed(4)),
+                        after: Number(r.after.toFixed(4)),
+                        delta: Number(r.delta.toFixed(4)),
+                        observed: r.observed,
+                        boundary: r.crossedBoundary
+                      });
+                    }
+                    if (r.crossedBoundary) {
+                      try {
+                        await store.store({
+                          content: `My ${r.name} trait drifted from ${r.before.toFixed(2)} to ${r.after.toFixed(2)} this session${r.observed !== null ? ` (observed ${r.observed.toFixed(2)})` : " (no evidence \u2014 pulled toward baseline)"}.`,
+                          type: "self_model",
+                          scope: "project",
+                          confidence: 0.45,
+                          tags: ["self-episode", "trait-drift", r.name],
+                          metadata: {
+                            category: "disposition",
+                            trait: r.name,
+                            before: r.before,
+                            after: r.after,
+                            observed: r.observed,
+                            source: "trait-drift"
+                          }
+                        });
+                      } catch {
+                      }
+                    }
+                  }
+                  await flush(store).catch(() => {
+                  });
+                } catch (traitErr) {
+                }
               }
             })().catch(
               (error) => log(

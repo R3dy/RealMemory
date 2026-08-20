@@ -11,6 +11,7 @@ import { TYPE_COLORS, EDGE_COLORS, domainColor } from '@/lib/colors';
 import { computeBrainLayout } from '@/lib/brain-layout';
 import { useUiStore } from '@/lib/ui-store';
 import type { ColorMode } from '@/lib/ui-store';
+import { glowScale } from '@/lib/glow';
 import { getGlowTexture, getBoltTexture } from './textures';
 import BrainShell from './BrainShell';
 import MemoryLabels from './MemoryLabels';
@@ -225,7 +226,8 @@ function Neurons({
   const meshRef = useRef<THREE.InstancedMesh>(null);
   const haloRef = useRef<THREE.Group>(null);
   const bornAt = useRef<number | null>(null);
-  const { reducedMotion } = useUiStore();
+  const { reducedMotion, glowIntensity } = useUiStore();
+  const g = glowScale(glowIntensity);
   const hoverIndex = hoverId ? nodes.findIndex((n) => n.id === hoverId) : -1;
 
   // material with per-instance emissive (instanceColor drives emissive via shader patch)
@@ -233,7 +235,7 @@ function Neurons({
     const mat = new THREE.MeshStandardMaterial({
       color: new THREE.Color('#0a1626'),
       emissive: new THREE.Color('#ffffff'),
-      emissiveIntensity: 1.55,
+      emissiveIntensity: g.emissive,
       roughness: 0.35,
       metalness: 0.1,
     });
@@ -247,7 +249,15 @@ function Neurons({
       );
     };
     return mat;
+    // material is created once; emissive is mutated by the effect below when
+    // glowIntensity changes (no recreation — cheap uniform write).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // C3 fix: mutate emissiveIntensity on the live material when the slider moves.
+  useEffect(() => {
+    material.emissiveIntensity = g.emissive;
+  }, [glowIntensity, g.emissive, material]);
 
   // halo sprites (one per node)
   const haloMaterials = useMemo(
@@ -258,11 +268,14 @@ function Neurons({
             map: getGlowTexture(),
             color: data.baseColors[i],
             transparent: true,
-            opacity: 0.35,
+            opacity: g.halo,
             blending: THREE.AdditiveBlending,
             depthWrite: false,
           }),
       ),
+    // base opacity is overwritten per-frame (see useFrame); recreated only on
+    // dataset swap. glowIntensity scaling happens in the per-frame expression.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [nodes, data],
   );
 
@@ -339,7 +352,7 @@ function Neurons({
         haloMaterials[i].opacity = Math.min(
           1,
           (matched ? (hoverSet && !hoverSet.has(i) ? 0.08 : 0.32) : 0.03) * entrance + flash * 0.55,
-        );
+        ) * glowIntensity;
       }
     }
     mesh.instanceMatrix.needsUpdate = true;
@@ -392,6 +405,8 @@ function SelectionRings({
   const i = nodes.findIndex((n) => n.id === selectedId);
   const g1 = useRef<THREE.Mesh>(null);
   const g2 = useRef<THREE.Mesh>(null);
+  const { glowIntensity } = useUiStore();
+  const g = glowScale(glowIntensity);
   useFrame(({ clock }) => {
     const t = clock.elapsedTime;
     if (g1.current) g1.current.rotation.z = (t * (2 * Math.PI)) / 3;
@@ -404,11 +419,11 @@ function SelectionRings({
     <group position={[x, y, z]}>
       <mesh ref={g1} rotation={[Math.PI / 2.6, 0, 0]}>
         <torusGeometry args={[r, 0.012, 8, 64]} />
-        <meshBasicMaterial color="#00d4ff" transparent opacity={0.9} blending={THREE.AdditiveBlending} depthWrite={false} />
+        <meshBasicMaterial color="#00d4ff" transparent opacity={g.ring} blending={THREE.AdditiveBlending} depthWrite={false} />
       </mesh>
       <mesh ref={g2} rotation={[Math.PI / 1.8, Math.PI / 5, 0]}>
         <torusGeometry args={[r * 1.25, 0.008, 8, 64]} />
-        <meshBasicMaterial color="#7de9ff" transparent opacity={0.6} blending={THREE.AdditiveBlending} depthWrite={false} />
+        <meshBasicMaterial color="#7de9ff" transparent opacity={g.ring2} blending={THREE.AdditiveBlending} depthWrite={false} />
       </mesh>
     </group>
   );
@@ -527,7 +542,8 @@ function Bolts({
   booted: boolean;
 }) {
   const meshRef = useRef<THREE.InstancedMesh>(null);
-  const { pulseDensity, reducedMotion } = useUiStore();
+  const { pulseDensity, reducedMotion, glowIntensity } = useUiStore();
+  const g = glowScale(glowIntensity);
   const lastSlotCount = useRef(0);
 
   // ambient bolt plan: [edgeIndex, phaseOffset, speed ∝ source accessCount, jitterSeed]
@@ -561,20 +577,23 @@ function Bolts({
     [],
   );
 
-  // static tint for ambient slots (burst slots are tinted per frame)
+  // static tint for ambient slots (burst slots are tinted per frame).
+  // C2 fix: scale the tint by glowIntensity so ambient bolts dim to zero at g=0
+  // (ambient bolts call writeBolt with tint=null, so the per-frame if(tint) path
+  // never runs for them — their brightness comes entirely from this static color).
   useEffect(() => {
     const mesh = meshRef.current;
     if (!mesh) return;
     for (let i = 0; i < BOLT_CAP; i++) {
       if (i < plan.length) {
-        tmpColor.copy(data.edgeColors[plan[i][0]]).lerp(WHITE, 0.3).multiplyScalar(1.5);
+        tmpColor.copy(data.edgeColors[plan[i][0]]).lerp(WHITE, 0.3).multiplyScalar(g.boltTint);
       } else {
         tmpColor.setRGB(0, 0, 0);
       }
       mesh.setColorAt(i, tmpColor);
     }
     if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-  }, [plan, data]);
+  }, [plan, data, g.boltTint]);
 
   useFrame(({ clock }) => {
     const mesh = meshRef.current;
@@ -618,7 +637,10 @@ function Bolts({
       boltMat4.setPosition(boltPos);
       mesh.setMatrixAt(slot, boltMat4);
       if (tint) {
-        tmpColor.copy(tint).multiplyScalar(Math.max(0.0001, flicker / 1.5));
+        // C2 fix: cascade bursts scale by glowIntensity too (ambient handled in
+        // the static tint useEffect above). flicker is the per-frame brightness;
+        // multiplying by glowIntensity dims cascade bursts to zero at g=0.
+        tmpColor.copy(tint).multiplyScalar(Math.max(0.0001, (flicker / 1.5) * glowIntensity));
         mesh.setColorAt(slot, tmpColor);
       }
       slot++;
@@ -873,6 +895,8 @@ function SceneContent({
   fx,
 }: BrainCanvasProps & { data: SceneData; fx: React.MutableRefObject<FxState> }) {
   const selectedIndex = selectedId ? nodes.findIndex((n) => n.id === selectedId) : -1;
+  const { glowIntensity } = useUiStore();
+  const g = glowScale(glowIntensity);
   return (
     <>
       {/* exponential fog: depth attenuation so distant neurons fade into the void —
@@ -932,7 +956,7 @@ function SceneContent({
       />
       <CameraRig nodes={nodes} data={data} selectedId={selectedId} focusId={focusId} booted={booted} />
       <EffectComposer multisampling={0}>
-        <Bloom luminanceThreshold={0.2} intensity={1.2} mipmapBlur />
+        <Bloom luminanceThreshold={0.2} intensity={g.bloom} mipmapBlur />
         <Vignette eskil={false} offset={0.25} darkness={0.72} />
       </EffectComposer>
     </>

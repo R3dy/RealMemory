@@ -1,5 +1,4 @@
-import { Tool } from '@modelcontextprotocol/sdk/types.js';
-import { MemoryStoreConfig, StoreInput, Memory, MemoryWithRelations, ListQuery, ListResult, ForgetResult, RecallQuery, RecallResult, SearchQuery, SearchResult, RelationshipType, Relationship, MemoryType, UpdatePatch } from './types.js';
+import { MemoryStoreConfig, StoreInput, Memory, MemoryWithRelations, ListQuery, ListResult, ForgetResult, MemoryType, RecallQuery, RecallResult, SearchQuery, SearchResult, RelationshipType, Relationship, UpdatePatch } from './types.js';
 
 /**
  * Synthetic-brain Phase 6: schema formation (episodic-to-semantic consolidation).
@@ -139,6 +138,15 @@ declare class MemoryStore {
      * not exist.
      */
     forget(id: string, hard?: boolean): Promise<ForgetResult>;
+    /**
+     * Archive (soft-delete) every active memory of a given type. Used by
+     * `--reset-self --identity` (Phase 10 Gate 1) to forget all self_model
+     * dispositions without touching the rest of the store. Returns the count of
+     * rows archived. Idempotent — already-archived rows are skipped. Does not
+     * cascade relationships (self_model rows rarely have any); a follow-up pass
+     * could, but the reset semantics are "forget the self," not "orphan-clean."
+     */
+    archiveByType(type: MemoryType): Promise<number>;
     /**
      * Recall memories relevant to a natural-language query. Uses semantic
      * (cosine-similarity) recall when an embedding provider is available, and
@@ -413,36 +421,4 @@ declare class MemoryStore {
     private requireDb;
 }
 
-/** A single MCP tool descriptor: name, description, JSON-Schema input, and handler. */
-interface McpToolHandler {
-    name: string;
-    description: string;
-    inputSchema: Tool["inputSchema"];
-    /** Invoke the tool. Returns JSON-serializable content. Throws on error. */
-    handler: (args: Record<string, unknown>) => Promise<unknown>;
-}
-/**
- * Build the array of 9 MCP tool descriptors backed by the given MemoryStore.
- * Each descriptor carries a JSON Schema `inputSchema` and a `handler` that
- * routes the parsed args to the corresponding MemoryStore method.
- */
-declare function createMcpTools(store: MemoryStore): McpToolHandler[];
-/**
- * Start the realmemory MCP server on stdio. Loads config (or accepts an
- * explicit config), initialises a MemoryStore, registers the 9 tool handlers,
- * and connects via the StdioServerTransport. Resolves once connected.
- *
- * `ownLifecycle` (default `false`) controls whether THIS function installs
- * process-level SIGINT/SIGTERM handlers + `process.exit(0)` on shutdown. A
- * library function must not install process signal handlers or call
- * `process.exit` — that is the host's job. Only the CLI entry (`bin.ts`, which
- * owns the process) passes `ownLifecycle: true`. In-process callers (tests,
- * plugin hosts, programmatic library use) get the default `false` and manage
- * cleanup themselves. Mirrors the browser server's `ownLifecycle` option.
- */
-interface StartMcpServerOptions {
-    ownLifecycle?: boolean;
-}
-declare function startMcpServer(config?: MemoryStoreConfig, opts?: StartMcpServerOptions): Promise<void>;
-
-export { MemoryStore as M, type StartMcpServerOptions as S, type McpToolHandler as a, createMcpTools as c, startMcpServer as s };
+export { MemoryStore as M };

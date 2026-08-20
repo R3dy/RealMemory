@@ -254,6 +254,25 @@ export function validateConfig(config: MemoryStoreConfig): void {
       throw new Error("brain.identityTokens must be a number in [100, 1000]");
     }
   }
+  // Synthetic-self Phase 10: brain.traits + brain.traitLearningRate validation.
+  // traits defaults to false (OPT-IN — first behavior-changing phase).
+  if (
+    config.brain?.traits !== undefined &&
+    typeof config.brain.traits !== "boolean"
+  ) {
+    throw new Error("brain.traits must be a boolean");
+  }
+  if (config.brain?.traitLearningRate !== undefined) {
+    if (
+      typeof config.brain.traitLearningRate !== "number" ||
+      config.brain.traitLearningRate < 0 ||
+      config.brain.traitLearningRate > 0.05
+    ) {
+      throw new Error(
+        "brain.traitLearningRate must be a number in [0, 0.05]",
+      );
+    }
+  }
 }
 
 function readJsonFile(path: string): Record<string, unknown> {
