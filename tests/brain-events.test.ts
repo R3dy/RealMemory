@@ -85,8 +85,8 @@ describe("brain-events (synthetic-self Phase 8)", () => {
   });
 
   describe("BRAIN_EVENT_KINDS", () => {
-    it("has exactly 13 v1 kinds", () => {
-      expect(BRAIN_EVENT_KINDS.length).toBe(13);
+    it("has exactly 14 v1 kinds", () => {
+      expect(BRAIN_EVENT_KINDS.length).toBe(14);
     });
 
     it("includes all expected kinds", () => {
@@ -104,6 +104,7 @@ describe("brain-events (synthetic-self Phase 8)", () => {
         "consolidate.cluster",
         "decay.run",
         "arousal.change",
+        "trait.drift",
       ];
       expect([...BRAIN_EVENT_KINDS]).toEqual(expected);
     });
@@ -154,13 +155,13 @@ describe("brain-events (synthetic-self Phase 8)", () => {
       expect(await flush(store)).toBe(0);
     });
 
-    it("round-trips all 13 kinds through the table", async () => {
+    it("round-trips all 14 kinds through the table", async () => {
       for (const kind of BRAIN_EVENT_KINDS) {
         emit(kind, { test: kind });
       }
       await flush(store);
       const rows = await store.getBrainEvents(0, 100);
-      expect(rows.length).toBe(13);
+      expect(rows.length).toBe(14);
       expect(rows.map((r) => r.kind)).toEqual([...BRAIN_EVENT_KINDS]);
     });
 

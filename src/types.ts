@@ -476,6 +476,20 @@ export interface MemoryStoreConfig {
      * Tier 2 situational). Default 350. Validated [100, 1000].
      */
     identityTokens?: number;
+    /**
+     * Synthetic-self Phase 10: drifting temperament (the trait vector). When
+     * true, the plugin updates the six traits once per session at idle via an
+     * EMA rule and applies them to existing constants within clamped bands.
+     * Defaults to **false** — OPT-IN: this is the first phase that alters
+     * behavior on evidence the user did not review. `--reset-self` reverts.
+     */
+    traits?: boolean;
+    /**
+     * Phase 10: EMA learning rate for trait drift. Default 0.02. Validated
+     * [0, 0.05]. At 0.02 a trait needs ~50 consistent sessions to move
+     * meaningfully — personality forms over months, not sliders.
+     */
+    traitLearningRate?: number;
   };
 }
 

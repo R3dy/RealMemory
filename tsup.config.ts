@@ -3,7 +3,7 @@ import { cpSync } from "node:fs";
 import { join } from "node:path";
 
 export default defineConfig({
-  entry: ["src/index.ts", "src/mcp-server.ts", "src/bin.ts", "src/types.ts", "src/plugin-entry.ts"],
+  entry: ["src/index.ts", "src/mcp-server.ts", "src/bin.ts", "src/types.ts", "src/plugin-entry.ts", "src/traits.ts"],
   format: ["esm", "cjs"],
   dts: true,
   clean: true,

@@ -1,0 +1,50 @@
+[
+  {
+    "operations": [
+      { "kind": "store", "content": "AWS API string params reject non-ASCII characters on every API.", "type": "lesson_learned", "domain": "aws", "tags": ["aws", "ascii", "gotcha"], "confidence": 0.9 },
+      { "kind": "store", "content": "Always update PHASE_STATE.md in the same commit as the state change.", "type": "lesson_learned", "domain": "opencode", "tags": ["process", "tracking"], "confidence": 0.85 },
+      { "kind": "recall", "query": "AWS ASCII param failure", "limit": 3 },
+      { "kind": "correction", "content": "Prefer grep -nP for non-ASCII detection before AWS calls." }
+    ],
+    "corrections": 1,
+    "recalls": 1
+  },
+  {
+    "operations": [
+      { "kind": "store", "content": "The OpenCode bash tool has a 120s timeout — never chain launch + sleep + check.", "type": "lesson_learned", "domain": "opencode", "tags": ["tooling", "timeout"], "confidence": 0.8 },
+      { "kind": "store", "content": "AWS API string params reject non-ASCII characters on every API.", "type": "lesson_learned", "domain": "aws", "tags": ["aws", "ascii", "gotcha"], "confidence": 0.9 },
+      { "kind": "recall", "query": "OpenCode timeout", "limit": 3 },
+      { "kind": "recall", "query": "AWS ASCII", "limit": 3 }
+    ],
+    "corrections": 0,
+    "recalls": 2
+  },
+  {
+    "operations": [
+      { "kind": "store", "content": "Subagent context exhaustion causes empty task_result — verify deliverables with wc -l.", "type": "lesson_learned", "domain": "opencode", "tags": ["subagent", "verification"], "confidence": 0.85 },
+      { "kind": "correction", "content": "Always run wc -l on sub-agent deliverables immediately after they return." },
+      { "kind": "recall", "query": "subagent empty result", "limit": 3 }
+    ],
+    "corrections": 1,
+    "recalls": 1
+  },
+  {
+    "operations": [
+      { "kind": "store", "content": "A killed session with running EC2 instances is a silent billing leak.", "type": "lesson_learned", "domain": "aws", "tags": ["cost", "billing", "ec2"], "confidence": 0.9 },
+      { "kind": "store", "content": "Always update PHASE_STATE.md in the same commit as the state change.", "type": "lesson_learned", "domain": "opencode", "tags": ["process", "tracking"], "confidence": 0.85 },
+      { "kind": "recall", "query": "billing leak EC2", "limit": 3 },
+      { "kind": "recall", "query": "tracking PHASE_STATE", "limit": 3 }
+    ],
+    "corrections": 0,
+    "recalls": 2
+  },
+  {
+    "operations": [
+      { "kind": "store", "content": "Supabase UUID columns silently reject non-UUID strings — every insert fails.", "type": "lesson_learned", "domain": "testing", "tags": ["supabase", "uuid", "gotcha"], "confidence": 0.85 },
+      { "kind": "correction", "content": "Use crypto.randomUUID() for Supabase inserts, never prefixed string ids." },
+      { "kind": "recall", "query": "supabase uuid insert fail", "limit": 3 }
+    ],
+    "corrections": 1,
+    "recalls": 1
+  }
+]

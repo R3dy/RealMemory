@@ -363,6 +363,22 @@ and a two-pathway cognition model (deliberative hooks on
 
 ## Changelog
 
+### v0.19.0
+
+- **Synthetic-self Phase 10 — trait vector.** Six personality traits (caution, curiosity, skepticism, tenacity, thoroughness, tempo), each 0..1 with EMA drift rule at `session.idle`. Traits shift existing constants within clamped bands — never replacing them. New `--reset-self` CLI command restores affected state to baseline. Twin harness (`scripts/twin/`) for A/B comparison of frozen vs drifting installs. Opt-in via `brain.traits` config. (#56)
+
+### v0.18.0
+
+- **3D Brain Graph — glow brightness slider.** A **Glow** slider in the Cortex Display panel that dims every glow surface together (Bloom, neuron emissive, halos, bolts, selection rings, fresnel shells, wireframe) down to true zero. New pure `glow.ts` module with `GLOW_BASE` constants + `glowScale(g)`. `glowIntensity` field in ui-store, `uGlow` shader uniform in BrainShell. 17 new tests. (#53)
+
+### v0.17.0
+
+- **Synthetic-self Phase 9 — self-scope memory.** New `self_model` memory type + `recordSelfEpisode` (writes templated first-person rows at `session.idle` from plugin state) + `assembleIdentity` (tiered identity block replacing single-preference query). Phase 8 completion: plugin emit wiring for all 13 brain-event kinds, `/brain` panels rewired from `Math.random` to real events, honesty badge, `--doctor` event-spine section. (#52)
+
+### v0.16.0
+
+- **Synthetic-self Phase 8 — brain event spine.** Schema v5, new `brain-events.ts` event bus (13 event kinds, ring-buffered, <5ms/1000 calls), SSE `/api/stream` endpoint, `/api/brain/state` snapshot route. Store methods + config additions for event retention and flush. (#51)
+
 ### v0.15.0
 
 - **3D Brain Graph — domain-region clustering.** Memories now render as color-coded neurons clustered by `domain` into 10 anatomical brain regions (frontal/parietal/temporal/occipital lobes, cerebellum, brain stem). New `domain-regions.ts` module; `brain-layout.ts` rewritten with `forceRegion` + `forceCerebellum` + `forceStem` containment. Color-by-domain (default) or color-by-type toggle. (#48)

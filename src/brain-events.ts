@@ -31,7 +31,8 @@ export type BrainEventKind =
   | "encode.reinforced"
   | "consolidate.cluster"
   | "decay.run"
-  | "arousal.change";
+  | "arousal.change"
+  | "trait.drift"; // Synthetic-self Phase 10: a trait moved (EMA update)
 
 /** All v1 event kinds. Used for validation + docs. */
 export const BRAIN_EVENT_KINDS: readonly BrainEventKind[] = [
@@ -48,6 +49,7 @@ export const BRAIN_EVENT_KINDS: readonly BrainEventKind[] = [
   "consolidate.cluster",
   "decay.run",
   "arousal.change",
+  "trait.drift",
 ] as const;
 
 const KIND_SET: ReadonlySet<string> = new Set(BRAIN_EVENT_KINDS);
