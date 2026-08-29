@@ -32,7 +32,8 @@ export type BrainEventKind =
   | "consolidate.cluster"
   | "decay.run"
   | "arousal.change"
-  | "trait.drift"; // Synthetic-self Phase 10: a trait moved (EMA update)
+  | "trait.drift" // Synthetic-self Phase 10: a trait moved (EMA update)
+  | "affect.record"; // Synthetic-self Phase 11: per-domain affect recorded
 
 /** All v1 event kinds. Used for validation + docs. */
 export const BRAIN_EVENT_KINDS: readonly BrainEventKind[] = [
@@ -50,6 +51,7 @@ export const BRAIN_EVENT_KINDS: readonly BrainEventKind[] = [
   "decay.run",
   "arousal.change",
   "trait.drift",
+  "affect.record",
 ] as const;
 
 const KIND_SET: ReadonlySet<string> = new Set(BRAIN_EVENT_KINDS);

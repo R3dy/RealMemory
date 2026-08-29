@@ -1,4 +1,7 @@
 import {
+  computeWeight
+} from "./chunk-KBPDWWWR.js";
+import {
   cosineSimilarity,
   embeddingFromBuffer,
   embeddingToBuffer
@@ -84,28 +87,6 @@ function scrubSecrets(content) {
     scrubbed = scrubbed.replace(pattern, "[REDACTED]");
   }
   return scrubbed;
-}
-
-// src/weighting.ts
-function computeWeight(memory, relevanceScore, config) {
-  const recencyFactor = computeRecencyFactor(memory.createdAt, config.decayHalfLifeDays);
-  const relevanceFactor = clamp01(relevanceScore);
-  const frequencyFactor = computeFrequencyFactor(memory.accessCount, memory.reinforcementCount);
-  const confidenceFactor = clamp01(memory.confidence);
-  return clamp01(recencyFactor * relevanceFactor * frequencyFactor * confidenceFactor);
-}
-function computeRecencyFactor(createdAt, halfLifeDays) {
-  const ageMs = Date.now() - new Date(createdAt).getTime();
-  const ageDays = ageMs / (1e3 * 60 * 60 * 24);
-  return Math.exp(-ageDays / halfLifeDays);
-}
-function computeFrequencyFactor(accessCount, reinforcementCount) {
-  const maxExpected = 100;
-  const ratio = Math.log(1 + accessCount + reinforcementCount) / Math.log(1 + maxExpected);
-  return clamp01(0.5 + 0.5 * ratio);
-}
-function clamp01(n) {
-  return Math.max(0, Math.min(1, n));
 }
 
 // src/config.ts
@@ -247,6 +228,9 @@ function validateConfig(config) {
         "brain.traitLearningRate must be a number in [0, 0.05]"
       );
     }
+  }
+  if (config.brain?.affect !== void 0 && typeof config.brain.affect !== "boolean") {
+    throw new Error("brain.affect must be a boolean");
   }
 }
 function readJsonFile(path) {
@@ -2117,9 +2101,6 @@ export {
   SelfRelationshipError,
   generateUlid,
   scrubSecrets,
-  computeWeight,
-  computeRecencyFactor,
-  computeFrequencyFactor,
   loadConfig,
   validateConfig,
   createEmbeddingProvider,

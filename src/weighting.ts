@@ -23,12 +23,19 @@ export function computeWeight(
 /**
  * Recency factor using exponential decay.
  * recencyFactor = exp(-ageDays / halfLifeDays)
- * A 0-day-old memory → factor = 1.0
- * A memory aged halfLifeDays → factor = exp(-1) ≈ 0.368
- * A memory aged 2*halfLifeDays → factor = exp(-2) ≈ 0.135
+ * A 0-day-old memory -> factor = 1.0
+ * A memory aged halfLifeDays -> factor = exp(-1) ~= 0.368
+ * A memory aged 2*halfLifeDays -> factor = exp(-2) ~= 0.135
+ *
+ * @param now Optional reference time (defaults to Date.now()). Injected by
+ *            callers that need deterministic decay (e.g. affect decay tests).
  */
-export function computeRecencyFactor(createdAt: string, halfLifeDays: number): number {
-  const ageMs = Date.now() - new Date(createdAt).getTime();
+export function computeRecencyFactor(
+  createdAt: string,
+  halfLifeDays: number,
+  now: Date = new Date(),
+): number {
+  const ageMs = now.getTime() - new Date(createdAt).getTime();
   const ageDays = ageMs / (1000 * 60 * 60 * 24);
   return Math.exp(-ageDays / halfLifeDays);
 }

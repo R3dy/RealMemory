@@ -186,9 +186,12 @@ describe("tool capture -> tool_outcome delta (C2 integration)", () => {
     );
 
     // 3. session.idle -> evaluateDelta stores a tool_outcome lesson_learned,
-    //    after resolving, the caller clears lastToolCapture.
+    //    after resolving, the caller clears lastToolCapture. The Phase 9
+    //    self-episode also fires (tool-mix row from the captured tool call —
+    //    fixed in Phase 11: the capture is snapshotted BEFORE the clear, so
+    //    recordSelfEpisode actually receives it).
     await (hooks.event as EventArgs)({ event: { type: "session.idle" } });
-    await vi.waitFor(() => expect(storeSpy).toHaveBeenCalledTimes(2), {
+    await vi.waitFor(() => expect(storeSpy).toHaveBeenCalledTimes(3), {
       timeout: 3000,
       interval: 20,
     });
@@ -197,6 +200,11 @@ describe("tool capture -> tool_outcome delta (C2 integration)", () => {
     expect(deltaInput.type).toBe("lesson_learned");
     expect(deltaInput.content).toContain("Tool outcome (bash): error");
     expect(deltaInput.tags).toContain("tool_outcome");
+
+    // The 3rd call is the Phase 9 self-episode tool-mix row.
+    const selfInput = storeSpy.mock.calls[2][0] as StoreInput;
+    expect(selfInput.type).toBe("self_model");
+    expect(selfInput.content).toContain("I used bash");
 
     // 4. C2: the capture was cleared — a generic followup turn stores nothing.
     await new Promise((r) => setTimeout(r, 50));
@@ -209,7 +217,7 @@ describe("tool capture -> tool_outcome delta (C2 integration)", () => {
     );
     await (hooks.event as EventArgs)({ event: { type: "session.idle" } });
     await new Promise((r) => setTimeout(r, 150));
-    expect(storeSpy).toHaveBeenCalledTimes(2);
+    expect(storeSpy).toHaveBeenCalledTimes(3);
     storeSpy.mockRestore();
   });
 });

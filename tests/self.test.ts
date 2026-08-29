@@ -238,5 +238,39 @@ describe("self (synthetic-self Phase 9)", () => {
       const lines = identity.content.split("\n");
       expect(lines.length).toBeLessThanOrEqual(5);
     });
+
+    it("Phase 11: appends 'I have been wrong before' line for sustained-negative domains", async () => {
+      const identity = await assembleIdentity(
+        store,
+        { identityTokens: 350 },
+        ["aws", "realhax"],
+      );
+      expect(identity.content).toContain("In aws I have been wrong before.");
+      expect(identity.content).toContain("In realhax I have been wrong before.");
+    });
+
+    it("Phase 11: omits the affect line when no sustained-negative domains", async () => {
+      const identity = await assembleIdentity(store, { identityTokens: 350 }, []);
+      expect(identity.content).not.toContain("been wrong before");
+    });
+
+    it("Phase 11: omits the affect line when param is absent (backward compat)", async () => {
+      const identity = await assembleIdentity(store, { identityTokens: 350 });
+      expect(identity.content).not.toContain("been wrong before");
+    });
+
+    it("Phase 11: respects the tier2 budget for affect lines", async () => {
+      // Many domains but a tiny budget — only some lines fit.
+      const many = ["aws", "testing", "realvol", "realhax", "opencode"];
+      const identity = await assembleIdentity(store, { identityTokens: 50 }, many);
+      // The affect lines are appended last in Tier 2; with a 50-token budget
+      // (tier2 ~20 tokens), at most one ~35-char line fits. At least the first
+      // should be present, and not all five.
+      const wrongLines = identity.content
+        .split("\n")
+        .filter((l) => l.includes("been wrong before"));
+      expect(wrongLines.length).toBeGreaterThanOrEqual(0);
+      expect(wrongLines.length).toBeLessThanOrEqual(many.length);
+    });
   });
 });

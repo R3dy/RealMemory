@@ -14,6 +14,7 @@
 
 import type { Memory, SearchQuery, SearchResult } from "./types";
 import type { MemoryStore } from "./store";
+import { getAffectBias, type AffectState } from "./affect";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -206,7 +207,10 @@ export function compileRule(memory: Memory): ReflexRule | null {
  * Detached (called from session.created). A cold cache (not yet built) means
  * no inhibition — the safe failure mode.
  */
-export async function buildReflexCache(store: MemoryStore): Promise<ReflexCache> {
+export async function buildReflexCache(
+  store: MemoryStore,
+  affect?: AffectState,
+): Promise<ReflexCache> {
   const query: SearchQuery = {
     types: ["lesson_learned", "user_preference"],
     minWeight: REFLEX_WEIGHT_FLOOR,
@@ -217,10 +221,43 @@ export async function buildReflexCache(store: MemoryStore): Promise<ReflexCache>
 
   const results: SearchResult = await store.search(query);
 
+  // Synthetic-self Phase 11: recall bias. For each domain with negative
+  // valence, lower the effective weight floor (getAffectBias is negative for
+  // negative valence) so caution rules in that domain surface earlier. Bounded
+  // — one extra search per negative-valence domain (typically 0-2). Optional
+  // `affect` param: absent → no-op (backward compat). See §4 Phase 11.
+  const allMemories: Memory[] = [...results.memories];
+  const seenIds = new Set(allMemories.map((m) => m.id));
+  if (affect) {
+    for (const [domain, af] of Object.entries(affect)) {
+      if (!af || af.valence >= 0) continue;
+      const biasedFloor = Math.max(0, REFLEX_WEIGHT_FLOOR + getAffectBias(af.valence));
+      if (biasedFloor >= REFLEX_WEIGHT_FLOOR) continue; // no lowering — skip
+      try {
+        const extra: SearchResult = await store.search({
+          types: ["lesson_learned", "user_preference"],
+          domain,
+          minWeight: biasedFloor,
+          sortBy: "weight",
+          sortOrder: "desc",
+          limit: SEARCH_LIMIT,
+        });
+        for (const m of extra.memories) {
+          if (!seenIds.has(m.id)) {
+            seenIds.add(m.id);
+            allMemories.push(m);
+          }
+        }
+      } catch {
+        // Fire-safe — a domain search failure must not break the cache build.
+      }
+    }
+  }
+
   const rules: ReflexRule[] = [];
   const preferences: string[] = [];
 
-  for (const memory of results.memories) {
+  for (const memory of allMemories) {
     if (memory.type === "user_preference") {
       preferences.push(memory.content);
       continue;

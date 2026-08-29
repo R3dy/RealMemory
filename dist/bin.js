@@ -2,14 +2,18 @@
 import {
   startBrowserServer,
   startMcpServer
-} from "./chunk-CO75OJWS.js";
+} from "./chunk-W7HBQ2Z4.js";
 import {
   printDoctorTable
-} from "./chunk-5CQTOMYQ.js";
+} from "./chunk-VYNGJSQW.js";
+import {
+  resetAffect
+} from "./chunk-UJBYGW3C.js";
 import {
   MemoryStore,
   loadConfig
-} from "./chunk-YHOE5GO2.js";
+} from "./chunk-ASX5J2YN.js";
+import "./chunk-KBPDWWWR.js";
 import {
   TRAITS_META_KEY,
   parseResetScope,
@@ -76,9 +80,13 @@ if (resetSelf) {
     }
     if (scope === "affect" || scope === "all") {
       try {
-        await store.setMeta("affect:v1", "");
-        report.push("affect: cleared (Phase 11 not yet shipped \u2014 no-op if empty)");
+        const before = await store.getMeta("affect:v1");
+        await resetAffect(store);
+        report.push(
+          `affect: reset to empty${before ? ` (was ${before.length} bytes)` : " (was empty \u2014 no-op)"}`
+        );
       } catch {
+        report.push("affect: reset attempted (non-fatal)");
       }
     }
     if (scope === "identity" || scope === "all") {

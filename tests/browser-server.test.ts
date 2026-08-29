@@ -112,7 +112,7 @@ describe("browser server — UI serving (issue #46)", () => {
     const res = await request("/version");
     expect(res.status).toBe(200);
     expect(res.contentType).toContain("application/json");
-    expect(JSON.parse(res.body)).toEqual({ version: "0.19.0" });
+    expect(JSON.parse(res.body)).toEqual({ version: "0.20.0" });
   });
 
   it("GET /api/stats returns 200 with the stats shape", async () => {

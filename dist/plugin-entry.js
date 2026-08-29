@@ -6,7 +6,15 @@ import {
   recordLandsOutcome,
   resetProbeForSession,
   resolveHostVersion
-} from "./chunk-5CQTOMYQ.js";
+} from "./chunk-VYNGJSQW.js";
+import {
+  getAffectBias,
+  inferDomainFromPath,
+  isSustainedNegative,
+  loadAffect,
+  recordAffect,
+  valenceTemperatureReduction
+} from "./chunk-UJBYGW3C.js";
 import {
   classifyIntent,
   deriveProjectId,
@@ -16,7 +24,8 @@ import {
 import {
   MemoryStore,
   loadConfig
-} from "./chunk-YHOE5GO2.js";
+} from "./chunk-ASX5J2YN.js";
+import "./chunk-KBPDWWWR.js";
 import {
   loadTraits,
   saveTraits,
@@ -39,7 +48,8 @@ var BRAIN_EVENT_KINDS = [
   "consolidate.cluster",
   "decay.run",
   "arousal.change",
-  "trait.drift"
+  "trait.drift",
+  "affect.record"
 ];
 var KIND_SET = new Set(BRAIN_EVENT_KINDS);
 var ring = null;
@@ -250,7 +260,7 @@ async function recordSelfEpisode(store, state) {
   }
   return written;
 }
-async function assembleIdentity(store, opts = {}) {
+async function assembleIdentity(store, opts = {}, sustainedNegativeDomains) {
   const tokenBudget = opts.identityTokens ?? 350;
   const tier1Budget = Math.round(tokenBudget * 0.6);
   const tier2Budget = tokenBudget - tier1Budget;
@@ -308,6 +318,16 @@ async function assembleIdentity(store, opts = {}) {
       memoryIds.push(r.id);
     }
   } catch {
+  }
+  if (sustainedNegativeDomains && sustainedNegativeDomains.length > 0) {
+    const tier2Start = lines.length;
+    for (const domain of sustainedNegativeDomains) {
+      if (!domain) continue;
+      const line = `- In ${domain} I have been wrong before.`;
+      const tier2Len = lines.slice(tier2Start).join("\n").length;
+      if (tier2Len + line.length > tier2Budget) break;
+      lines.push(line);
+    }
   }
   if (lines.length === 0) {
     return { content: "", memoryIds: [] };
@@ -390,7 +410,7 @@ function compileRule(memory) {
     confidence: Math.max(0, Math.min(1, memory.confidence))
   };
 }
-async function buildReflexCache(store) {
+async function buildReflexCache(store, affect) {
   const query = {
     types: ["lesson_learned", "user_preference"],
     minWeight: REFLEX_WEIGHT_FLOOR,
@@ -399,9 +419,35 @@ async function buildReflexCache(store) {
     limit: SEARCH_LIMIT
   };
   const results = await store.search(query);
+  const allMemories = [...results.memories];
+  const seenIds = new Set(allMemories.map((m) => m.id));
+  if (affect) {
+    for (const [domain, af] of Object.entries(affect)) {
+      if (!af || af.valence >= 0) continue;
+      const biasedFloor = Math.max(0, REFLEX_WEIGHT_FLOOR + getAffectBias(af.valence));
+      if (biasedFloor >= REFLEX_WEIGHT_FLOOR) continue;
+      try {
+        const extra = await store.search({
+          types: ["lesson_learned", "user_preference"],
+          domain,
+          minWeight: biasedFloor,
+          sortBy: "weight",
+          sortOrder: "desc",
+          limit: SEARCH_LIMIT
+        });
+        for (const m of extra.memories) {
+          if (!seenIds.has(m.id)) {
+            seenIds.add(m.id);
+            allMemories.push(m);
+          }
+        }
+      } catch {
+      }
+    }
+  }
   const rules = [];
   const preferences = [];
-  for (const memory of results.memories) {
+  for (const memory of allMemories) {
     if (memory.type === "user_preference") {
       preferences.push(memory.content);
       continue;
@@ -996,7 +1042,8 @@ async function realmemoryPlugin(ctx) {
     predictionCounter: 0,
     lastPredictionOutcome: null,
     lastBlock: null,
-    arousalTracker: emptyArousalTracker()
+    arousalTracker: emptyArousalTracker(),
+    affectState: null
   };
   state.probe.hostVersion = resolveHostVersion(ctx);
   async function getStore() {
@@ -1079,9 +1126,22 @@ async function realmemoryPlugin(ctx) {
           if (brainConfigWM.brain?.workingMemory !== false) {
             try {
               if (brainConfigWM.brain?.selfModel !== false) {
-                const identity = await assembleIdentity(store, {
-                  identityTokens: brainConfigWM.brain?.identityTokens
-                });
+                let sustainedNegativeDomains;
+                const affectCfgId = state.config;
+                if (affectCfgId.brain?.affect === true) {
+                  try {
+                    const affectState = await loadAffect(store);
+                    sustainedNegativeDomains = Object.entries(affectState).filter(([, a]) => isSustainedNegative(a)).map(([d]) => d);
+                  } catch {
+                  }
+                }
+                const identity = await assembleIdentity(
+                  store,
+                  {
+                    identityTokens: brainConfigWM.brain?.identityTokens
+                  },
+                  sustainedNegativeDomains
+                );
                 if (identity.content) {
                   state.workingMemory.identity = {
                     content: identity.content,
@@ -1135,7 +1195,16 @@ async function realmemoryPlugin(ctx) {
           void (async () => {
             try {
               const store = await getStore();
-              state.reflexCache = await buildReflexCache(store);
+              const affectCfg = state.config;
+              let affect;
+              if (affectCfg.brain?.affect === true) {
+                try {
+                  affect = await loadAffect(store);
+                  state.affectState = affect;
+                } catch {
+                }
+              }
+              state.reflexCache = await buildReflexCache(store, affect);
               await log("debug", `ReflexCache built: ${state.reflexCache.rules.length} rules`);
             } catch (error) {
               await log(
@@ -1210,6 +1279,7 @@ async function realmemoryPlugin(ctx) {
                 state.lastUserText ?? "",
                 assistantText
               );
+              const lastTcForPostDelta = state.lastToolCapture;
               state.lastToolCapture = null;
               await flush(store).catch(() => {
               });
@@ -1218,7 +1288,7 @@ async function realmemoryPlugin(ctx) {
                   sessionId: state.sessionId ?? void 0,
                   lastUserText: state.lastUserText,
                   lastUserIntent: state.lastUserIntent,
-                  lastToolCapture: state.lastToolCapture,
+                  lastToolCapture: lastTcForPostDelta,
                   lastPredictionOutcome: state.lastPredictionOutcome,
                   lastBlock: state.lastBlock,
                   reflexCache: state.reflexCache ? { rules: state.reflexCache.rules, arousal: state.reflexCache.arousal } : null,
@@ -1298,6 +1368,43 @@ async function realmemoryPlugin(ctx) {
                   await flush(store).catch(() => {
                   });
                 } catch (traitErr) {
+                }
+              }
+              const affectCfg = state.config.brain;
+              if (affectCfg?.affect === true) {
+                try {
+                  const tc = lastTcForPostDelta;
+                  const domain = tc?.filePath ? inferDomainFromPath(tc.filePath) : null;
+                  if (domain) {
+                    const isError = tc?.isError ?? false;
+                    const surprise = state.lastPredictionOutcome?.surprise ?? 0;
+                    const valence = isError ? -0.7 - 0.3 * surprise : 0.4 - 0.3 * surprise;
+                    const arousal = isError ? 0.7 + 0.3 * surprise : 0.2 + 0.3 * surprise;
+                    const recorded = await recordAffect(store, domain, { valence, arousal });
+                    if (recorded) {
+                      try {
+                        emit(
+                          "affect.record",
+                          { domain, valence: recorded.valence, arousal: recorded.arousal, n: recorded.n },
+                          state.sessionId ?? void 0
+                        );
+                      } catch {
+                      }
+                    }
+                  }
+                  if (brainCfg?.traits === true && domain) {
+                    const affectState = await loadAffect(store);
+                    const domainAffect = affectState[domain];
+                    if (isSustainedNegative(domainAffect)) {
+                      try {
+                        const traits = await loadTraits(store);
+                        const { vector } = updateTraits(traits, { caution: 0.65 }, brainCfg.traitLearningRate ?? 0.02);
+                        await saveTraits(store, vector);
+                      } catch {
+                      }
+                    }
+                  }
+                } catch (affectErr) {
                 }
               }
             })().catch(
@@ -1959,29 +2066,46 @@ async function realmemoryPlugin(ctx) {
         }
       })();
     },
-    // Synthetic-brain Phase 5: arousal-based temperature modulation.
-    // Reflex path (ADR-010): synchronous, cache-only, <5ms. Reads
-    // ReflexCache.arousal (in-RAM) and clamps temperature DOWN by up to 0.15.
-    // Never increases temperature above the agent's setting. Default off
-    // (brain.arousalModulation !== false gate).
+    // Synthetic-brain Phase 5 / Synthetic-self Phase 11: temperature modulation.
+    // Reflex path (ADR-010): synchronous, cache-only, <5ms. Composes two
+    // independent opt-in clamps, each clamping temperature DOWN (never raises):
+    //   - arousalModulation (Phase 5): ephemeral ReflexCache.arousal * 0.15.
+    //   - affect (Phase 11): persistent per-domain valence reduction.
+    // Combined reduction is capped at 0.15 (same ceiling). No domain signal at
+    // chat.params time → no valence contribution (honest: no signal, no clamp).
     "chat.params": (_input, output) => {
       recordHookFired(getStore, state.probe, "chat.params");
       const brainConfig = state.config;
-      if (brainConfig.brain?.arousalModulation !== true) return;
-      const cache = state.reflexCache;
-      if (!cache || cache.arousal < AROUSAL_THRESHOLD) return;
-      if (typeof output.temperature === "number" && output.temperature > 0) {
-        const delta = cache.arousal * AROUSAL_TEMP_DELTA;
-        const newTemp = Math.max(0, output.temperature - delta);
-        output.temperature = newTemp;
-        void (async () => {
-          try {
-            const store = await getStore();
-            await store.recordMetric("arousal_modulation", delta, state.sessionId ?? void 0);
-          } catch {
-          }
-        })();
+      const arousalOn = brainConfig.brain?.arousalModulation === true;
+      const affectOn = brainConfig.brain?.affect === true;
+      if (!arousalOn && !affectOn) return;
+      if (typeof output.temperature !== "number" || output.temperature <= 0) return;
+      let reduction = 0;
+      if (arousalOn) {
+        const cache = state.reflexCache;
+        if (cache && cache.arousal >= AROUSAL_THRESHOLD) {
+          reduction += cache.arousal * AROUSAL_TEMP_DELTA;
+        }
       }
+      if (affectOn) {
+        const tc = state.lastToolCapture;
+        const domain = tc?.filePath ? inferDomainFromPath(tc.filePath) : null;
+        const af = domain ? state.affectState?.[domain] : void 0;
+        if (af) {
+          reduction += valenceTemperatureReduction(af.valence);
+        }
+      }
+      reduction = Math.min(0.15, reduction);
+      if (reduction <= 0) return;
+      const newTemp = Math.max(0, output.temperature - reduction);
+      output.temperature = newTemp;
+      void (async () => {
+        try {
+          const store = await getStore();
+          await store.recordMetric("arousal_modulation", reduction, state.sessionId ?? void 0);
+        } catch {
+        }
+      })();
     },
     // Synthetic-brain Phase 5: memory notes in tool descriptions.
     // Reflex path (ADR-010): synchronous, cache-only, <5ms. Appends a one-line
