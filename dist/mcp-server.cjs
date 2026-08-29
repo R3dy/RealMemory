@@ -370,8 +370,8 @@ function computeWeight(memory, relevanceScore, config) {
   const confidenceFactor = clamp01(memory.confidence);
   return clamp01(recencyFactor * relevanceFactor * frequencyFactor * confidenceFactor);
 }
-function computeRecencyFactor(createdAt, halfLifeDays) {
-  const ageMs = Date.now() - new Date(createdAt).getTime();
+function computeRecencyFactor(createdAt, halfLifeDays, now = /* @__PURE__ */ new Date()) {
+  const ageMs = now.getTime() - new Date(createdAt).getTime();
   const ageDays = ageMs / (1e3 * 60 * 60 * 24);
   return Math.exp(-ageDays / halfLifeDays);
 }
@@ -523,6 +523,9 @@ function validateConfig(config) {
         "brain.traitLearningRate must be a number in [0, 0.05]"
       );
     }
+  }
+  if (config.brain?.affect !== void 0 && typeof config.brain.affect !== "boolean") {
+    throw new Error("brain.affect must be a boolean");
   }
 }
 function readJsonFile(path) {
@@ -2274,7 +2277,7 @@ async function handleRequest(req, res, store, uiDir) {
     return;
   }
   if (pathname === "/version") {
-    sendJson(res, 200, { version: "0.19.0" });
+    sendJson(res, 200, { version: "0.20.0" });
     return;
   }
   if (pathname === "/api/stats") {
@@ -2824,7 +2827,7 @@ function createMcpTools(store) {
   ];
 }
 var SERVER_NAME = "realmemory";
-var SERVER_VERSION = "0.19.0";
+var SERVER_VERSION = "0.20.0";
 async function startMcpServer(config, opts) {
   const mergedConfig = config ?? loadConfig();
   const ownLifecycle = opts?.ownLifecycle ?? false;

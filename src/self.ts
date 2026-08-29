@@ -207,6 +207,7 @@ export async function recordSelfEpisode(
 export async function assembleIdentity(
   store: MemoryStore,
   opts: { identityTokens?: number; projectId?: string } = {},
+  sustainedNegativeDomains?: string[],
 ): Promise<{ content: string; memoryIds: string[] }> {
   const tokenBudget = opts.identityTokens ?? 350;
   const tier1Budget = Math.round(tokenBudget * 0.6); // ~210 tokens
@@ -276,6 +277,23 @@ export async function assembleIdentity(
     }
   } catch {
     // Non-fatal.
+  }
+
+  // Synthetic-self Phase 11: situational affect line. For each domain with
+  // sustained negative valence, append one factual disposition line: "in this
+  // area I have been wrong before." This is NOT tone of voice (§7) — it is a
+  // measured, reversible signal that recall bias + caution already act on; the
+  // identity line makes the disposition legible to the agent's own reasoning.
+  // Optional param: absent → no-op (backward compat).
+  if (sustainedNegativeDomains && sustainedNegativeDomains.length > 0) {
+    const tier2Start = lines.length;
+    for (const domain of sustainedNegativeDomains) {
+      if (!domain) continue;
+      const line = `- In ${domain} I have been wrong before.`;
+      const tier2Len = lines.slice(tier2Start).join("\n").length;
+      if (tier2Len + line.length > tier2Budget) break;
+      lines.push(line);
+    }
   }
 
   if (lines.length === 0) {

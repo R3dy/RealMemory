@@ -13,6 +13,14 @@ import {
   type TraitVector,
 } from "./traits";
 import {
+  recordAffect,
+  loadAffect,
+  isSustainedNegative,
+  inferDomainFromPath,
+  valenceTemperatureReduction,
+  type AffectState,
+} from "./affect";
+import {
   createProbeState,
   resetProbeForSession,
   resolveHostVersion,
@@ -138,6 +146,11 @@ interface PluginState {
   } | null;
   /** Synthetic-brain Phase 5: rolling arousal signal tracker (last 5 turns). */
   arousalTracker: ArousalTracker;
+  /** Synthetic-self Phase 11: in-RAM affect state (per-domain valence/arousal).
+   *  Loaded at session.created (detached, gated brain.affect) so chat.params can
+   *  read it without per-message I/O (mirrors arousalTracker). Null when affect
+   *  is off or not yet loaded. */
+  affectState: AffectState | null;
 }
 
 /** Check if a file path looks like a config, schema, or route file worth capturing. */
@@ -350,6 +363,7 @@ export default async function realmemoryPlugin(
     lastPredictionOutcome: null,
     lastBlock: null,
     arousalTracker: emptyArousalTracker(),
+    affectState: null,
   };
 
   // Resolve host version once at plugin init (Phase 0 probe).
@@ -476,9 +490,28 @@ export default async function realmemoryPlugin(
             try {
               if (brainConfigWM.brain?.selfModel !== false) {
                 // Phase 9: assemble the tiered identity block.
-                const identity = await assembleIdentity(store, {
-                  identityTokens: brainConfigWM.brain?.identityTokens,
-                });
+                // Phase 11: pass sustained-negative domains (from persistent
+                // affect) so the situational "I have been wrong before" line
+                // is included. Gated on brain.affect.
+                let sustainedNegativeDomains: string[] | undefined;
+                const affectCfgId = state.config as { brain?: { affect?: boolean } };
+                if (affectCfgId.brain?.affect === true) {
+                  try {
+                    const affectState = await loadAffect(store);
+                    sustainedNegativeDomains = Object.entries(affectState)
+                      .filter(([, a]) => isSustainedNegative(a))
+                      .map(([d]) => d);
+                  } catch {
+                    // Fire-safe — identity line is best-effort.
+                  }
+                }
+                const identity = await assembleIdentity(
+                  store,
+                  {
+                    identityTokens: brainConfigWM.brain?.identityTokens,
+                  },
+                  sustainedNegativeDomains,
+                );
                 if (identity.content) {
                   state.workingMemory.identity = {
                     content: identity.content,
@@ -549,7 +582,20 @@ export default async function realmemoryPlugin(
           void (async () => {
             try {
               const store = await getStore();
-              state.reflexCache = await buildReflexCache(store);
+              // Synthetic-self Phase 11: load affect state for recall bias
+              // (lower reflex weight floor in negative-valence domains) + cache
+              // it in-RAM for chat.params. Gated on brain.affect.
+              const affectCfg = state.config as { brain?: { affect?: boolean } };
+              let affect: AffectState | undefined;
+              if (affectCfg.brain?.affect === true) {
+                try {
+                  affect = await loadAffect(store);
+                  state.affectState = affect;
+                } catch {
+                  // Fire-safe — recall bias is best-effort.
+                }
+              }
+              state.reflexCache = await buildReflexCache(store, affect);
               await log("debug", `ReflexCache built: ${state.reflexCache.rules.length} rules`);
             } catch (error) {
               await log(
@@ -654,6 +700,9 @@ export default async function realmemoryPlugin(
                 assistantText,
               );
               // C2 fix: clear lastToolCapture AFTER evaluateDelta completes.
+              // Capture for the self-episode + affect blocks (which run after
+              // the clear and need the tool capture for domain inference).
+              const lastTcForPostDelta = state.lastToolCapture;
               state.lastToolCapture = null;
               // Synthetic-self Phase 8: flush the brain event ring (detached).
               await flush(store).catch(() => {});
@@ -665,7 +714,7 @@ export default async function realmemoryPlugin(
                   sessionId: state.sessionId ?? undefined,
                   lastUserText: state.lastUserText,
                   lastUserIntent: state.lastUserIntent,
-                  lastToolCapture: state.lastToolCapture,
+                  lastToolCapture: lastTcForPostDelta,
                   lastPredictionOutcome: state.lastPredictionOutcome,
                   lastBlock: state.lastBlock,
                   reflexCache: state.reflexCache
@@ -771,6 +820,59 @@ export default async function realmemoryPlugin(
                   await flush(store).catch(() => {});
                 } catch (traitErr) {
                   // Fire-safe — trait drift must never break session.idle.
+                }
+              }
+              // Synthetic-self Phase 11: valence + persistent affect. OPT-IN
+              // — gated on brain.affect (default false). Runs once per session
+              // at idle on the deliberative path (ADR-010). Records per-domain
+              // valence/arousal from this session's outcomes (failures ->
+              // negative valence + high arousal). Never drives tone of voice.
+              const affectCfg = (state.config as { brain?: { affect?: boolean } }).brain;
+              if (affectCfg?.affect === true) {
+                try {
+                  // Determine the domain from the last tool capture (if any).
+                  // Domains come from memory.domain; for a session without a
+                  // clear domain signal, we skip affect recording (no domain).
+                  const tc = lastTcForPostDelta;
+                  const domain = tc?.filePath ? inferDomainFromPath(tc.filePath) : null;
+                  if (domain) {
+                    // Failure -> negative valence + high arousal; success -> positive + low.
+                    const isError = tc?.isError ?? false;
+                    const surprise = state.lastPredictionOutcome?.surprise ?? 0;
+                    const valence = isError ? -0.7 - 0.3 * surprise : 0.4 - 0.3 * surprise;
+                    const arousal = isError ? 0.7 + 0.3 * surprise : 0.2 + 0.3 * surprise;
+                    const recorded = await recordAffect(store, domain, { valence, arousal });
+                    // Synthetic-self Phase 11: emit affect.record brain event
+                    // (observation-only — self-gates on ring.enabled). Fire-safe.
+                    if (recorded) {
+                      try {
+                        emit(
+                          "affect.record",
+                          { domain, valence: recorded.valence, arousal: recorded.arousal, n: recorded.n },
+                          state.sessionId ?? undefined,
+                        );
+                      } catch {
+                        // Fire-safe — telemetry must never break session.idle.
+                      }
+                    }
+                  }
+                  // Sustained negative valence feeds caution trait (if traits on).
+                  if (brainCfg?.traits === true && domain) {
+                    const affectState = await loadAffect(store);
+                    const domainAffect = affectState[domain];
+                    if (isSustainedNegative(domainAffect)) {
+                      // Feed caution: a sustained-negative domain nudges caution up.
+                      try {
+                        const traits = await loadTraits(store);
+                        const { vector } = updateTraits(traits, { caution: 0.65 }, brainCfg.traitLearningRate ?? 0.02);
+                        await saveTraits(store, vector);
+                      } catch {
+                        // Fire-safe.
+                      }
+                    }
+                  }
+                } catch (affectErr) {
+                  // Fire-safe — affect must never break session.idle.
                 }
               }
             })().catch((error) =>
@@ -1684,11 +1786,13 @@ export default async function realmemoryPlugin(
       })();
     },
 
-    // Synthetic-brain Phase 5: arousal-based temperature modulation.
-    // Reflex path (ADR-010): synchronous, cache-only, <5ms. Reads
-    // ReflexCache.arousal (in-RAM) and clamps temperature DOWN by up to 0.15.
-    // Never increases temperature above the agent's setting. Default off
-    // (brain.arousalModulation !== false gate).
+    // Synthetic-brain Phase 5 / Synthetic-self Phase 11: temperature modulation.
+    // Reflex path (ADR-010): synchronous, cache-only, <5ms. Composes two
+    // independent opt-in clamps, each clamping temperature DOWN (never raises):
+    //   - arousalModulation (Phase 5): ephemeral ReflexCache.arousal * 0.15.
+    //   - affect (Phase 11): persistent per-domain valence reduction.
+    // Combined reduction is capped at 0.15 (same ceiling). No domain signal at
+    // chat.params time → no valence contribution (honest: no signal, no clamp).
     "chat.params": (
       _input: { sessionID?: string; agent?: string; model?: unknown; provider?: string },
       output: { temperature?: number; topP?: number; topK?: number; maxOutputTokens?: number },
@@ -1696,27 +1800,47 @@ export default async function realmemoryPlugin(
       recordHookFired(getStore, state.probe, "chat.params");
 
       const brainConfig = state.config as {
-        brain?: { arousalModulation?: boolean };
+        brain?: { arousalModulation?: boolean; affect?: boolean };
       };
-      if (brainConfig.brain?.arousalModulation !== true) return;
+      const arousalOn = brainConfig.brain?.arousalModulation === true;
+      const affectOn = brainConfig.brain?.affect === true;
+      if (!arousalOn && !affectOn) return;
 
-      const cache = state.reflexCache;
-      if (!cache || cache.arousal < AROUSAL_THRESHOLD) return;
+      if (typeof output.temperature !== "number" || output.temperature <= 0) return;
 
-      if (typeof output.temperature === "number" && output.temperature > 0) {
-        const delta = cache.arousal * AROUSAL_TEMP_DELTA;
-        const newTemp = Math.max(0, output.temperature - delta);
-        output.temperature = newTemp;
-        // Record metric (detached — INV-017).
-        void (async () => {
-          try {
-            const store = await getStore();
-            await store.recordMetric("arousal_modulation", delta, state.sessionId ?? undefined);
-          } catch {
-            // Fire-safe.
-          }
-        })();
+      let reduction = 0;
+      // Phase 5: ephemeral arousal clamp.
+      if (arousalOn) {
+        const cache = state.reflexCache;
+        if (cache && cache.arousal >= AROUSAL_THRESHOLD) {
+          reduction += cache.arousal * AROUSAL_TEMP_DELTA;
+        }
       }
+      // Phase 11: persistent valence clamp. The domain is inferred from the
+      // prior turn's tool capture (lastToolCapture survives per the C2 fix).
+      if (affectOn) {
+        const tc = state.lastToolCapture;
+        const domain = tc?.filePath ? inferDomainFromPath(tc.filePath) : null;
+        const af = domain ? state.affectState?.[domain] : undefined;
+        if (af) {
+          reduction += valenceTemperatureReduction(af.valence);
+        }
+      }
+      // Combined ceiling — never reduces by more than 0.15.
+      reduction = Math.min(0.15, reduction);
+      if (reduction <= 0) return;
+
+      const newTemp = Math.max(0, output.temperature - reduction);
+      output.temperature = newTemp;
+      // Record metric (detached — INV-017).
+      void (async () => {
+        try {
+          const store = await getStore();
+          await store.recordMetric("arousal_modulation", reduction, state.sessionId ?? undefined);
+        } catch {
+          // Fire-safe.
+        }
+      })();
     },
 
     // Synthetic-brain Phase 5: memory notes in tool descriptions.

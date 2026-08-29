@@ -352,3 +352,20 @@ describe("brain.traits + brain.traitLearningRate validation (Phase 10)", () => {
     ).toThrow(/brain.traitLearningRate must be a number in \[0, 0\.05\]/);
   });
 });
+
+describe("brain.affect validation (Phase 11)", () => {
+  it("accepts affect true/false", () => {
+    expect(() => validateConfig({ brain: { affect: true } })).not.toThrow();
+    expect(() => validateConfig({ brain: { affect: false } })).not.toThrow();
+  });
+
+  it("accepts undefined affect (defaults to false)", () => {
+    expect(() => validateConfig({})).not.toThrow();
+  });
+
+  it("rejects non-boolean affect", () => {
+    expect(() =>
+      validateConfig({ brain: { affect: "yes" as unknown as boolean } }),
+    ).toThrow(/brain.affect must be a boolean/);
+  });
+});

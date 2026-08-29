@@ -490,6 +490,15 @@ export interface MemoryStoreConfig {
      * meaningfully — personality forms over months, not sliders.
      */
     traitLearningRate?: number;
+    /**
+     * Synthetic-self Phase 11: valence + persistent affect. When true, the
+     * plugin maintains per-domain `{ valence, arousal, n, updatedAt }` in
+     * meta `affect:v1`, decaying toward neutral. Drives recall bias,
+     * chat.params temperature, trait updates, and one identity line. NEVER
+     * tone of voice. Defaults to **false** — OPT-IN. `--reset-self --affect`
+     * reverts.
+     */
+    affect?: boolean;
   };
 }
 

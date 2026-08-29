@@ -273,6 +273,13 @@ export function validateConfig(config: MemoryStoreConfig): void {
       );
     }
   }
+  // Synthetic-self Phase 11: brain.affect validation. OPT-IN (default false).
+  if (
+    config.brain?.affect !== undefined &&
+    typeof config.brain.affect !== "boolean"
+  ) {
+    throw new Error("brain.affect must be a boolean");
+  }
 }
 
 function readJsonFile(path: string): Record<string, unknown> {

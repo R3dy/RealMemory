@@ -31,6 +31,7 @@ function writeProjectConfig(projectDir: string, config: Record<string, unknown>)
 
 function makeContext(opts?: {
   brain?: Record<string, unknown>;
+  autoCapture?: boolean;
 }): { ctx: OpenCodePluginContext; projectDir: string; dbPath: string } {
   const dbPath = uniqueDbPath();
   const projectDir = join(tempDir, `proj-${generateUlid()}`);
@@ -38,7 +39,7 @@ function makeContext(opts?: {
   writeProjectConfig(projectDir, {
     embeddingModel: null,
     storagePath: dbPath,
-    autoCapture: false,
+    autoCapture: opts?.autoCapture ?? false,
     autoSummarize: false,
     brainLoop: true,
     ...(opts?.brain ? { brain: opts.brain } : {}),
@@ -281,6 +282,159 @@ describe("Phase 5: chat.params handler", () => {
     const out = { temperature: 0.5 };
     handler({}, out);
     expect(out.temperature).toBe(0.5); // unchanged — arousal 0, below threshold
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 11: affect (valence) temperature clamp (plugin integration)
+// ---------------------------------------------------------------------------
+
+describe("Phase 11: chat.params affect clamp", () => {
+  it("affect: true + negative-valence domain + lastToolCapture → temp lowered", async () => {
+    const { ctx, dbPath } = makeContext({
+      brain: { affect: true },
+      autoCapture: true,
+    });
+    const hooks = await realmemoryPlugin(ctx);
+
+    const store = new MemoryStore({
+      projectId: "test", storagePath: dbPath, embeddingMode: "keyword",
+    } as Record<string, unknown>);
+    await store.init();
+    // Seed a sustained-negative affect for the aws domain.
+    await store.setMeta(
+      "affect:v1",
+      JSON.stringify({
+        aws: { valence: -1, arousal: 0.8, n: 5, updatedAt: "2026-08-19T00:00:00Z" },
+      }),
+    );
+
+    // session.created loads affectState into RAM (detached).
+    await buildCacheAndWait(hooks);
+
+    // Fire tool.execute.after on a read of an aws config file → sets
+    // lastToolCapture.filePath so chat.params can infer the domain.
+    // (isConfigOrSchemaFile gates the read-capture; tsconfig.json matches.
+    // inferDomainFromPath maps "terraform" → "aws".)
+    const after = hooks["tool.execute.after"] as Function;
+    after(
+      { tool: "read", args: { filePath: "/projects/realhax/terraform/tsconfig.json" } },
+      { output: "ok" },
+    );
+    await new Promise((r) => setTimeout(r, 50));
+
+    const handler = hooks["chat.params"] as Function;
+    const out = { temperature: 0.7 };
+    handler({}, out);
+    // valence -1 → reduction 0.15 (capped). temp 0.7 - 0.15 = 0.55.
+    expect(out.temperature).toBeCloseTo(0.55, 5);
+  });
+
+  it("affect: true but no domain signal (no lastToolCapture) → no valence clamp", async () => {
+    const { ctx, dbPath } = makeContext({ brain: { affect: true } });
+    const hooks = await realmemoryPlugin(ctx);
+
+    const store = new MemoryStore({
+      projectId: "test", storagePath: dbPath, embeddingMode: "keyword",
+    } as Record<string, unknown>);
+    await store.init();
+    await store.setMeta(
+      "affect:v1",
+      JSON.stringify({
+        aws: { valence: -1, arousal: 0.8, n: 5, updatedAt: "2026-08-19T00:00:00Z" },
+      }),
+    );
+    await buildCacheAndWait(hooks);
+
+    // No tool.execute.after fired → lastToolCapture is null → no domain.
+    const handler = hooks["chat.params"] as Function;
+    const out = { temperature: 0.7 };
+    handler({}, out);
+    expect(out.temperature).toBe(0.7); // unchanged
+  });
+
+  it("affect: true + positive valence → no clamp (never raises)", async () => {
+    const { ctx, dbPath } = makeContext({
+      brain: { affect: true },
+      autoCapture: true,
+    });
+    const hooks = await realmemoryPlugin(ctx);
+
+    const store = new MemoryStore({
+      projectId: "test", storagePath: dbPath, embeddingMode: "keyword",
+    } as Record<string, unknown>);
+    await store.init();
+    await store.setMeta(
+      "affect:v1",
+      JSON.stringify({
+        testing: { valence: 0.8, arousal: 0.2, n: 5, updatedAt: "2026-08-19T00:00:00Z" },
+      }),
+    );
+    await buildCacheAndWait(hooks);
+
+    const after = hooks["tool.execute.after"] as Function;
+    after(
+      { tool: "read", args: { filePath: "/tests/tsconfig.json" } },
+      { output: "ok" },
+    );
+    await new Promise((r) => setTimeout(r, 50));
+
+    const handler = hooks["chat.params"] as Function;
+    const out = { temperature: 0.7 };
+    handler({}, out);
+    expect(out.temperature).toBe(0.7); // positive valence → no reduction
+  });
+
+  it("composes arousal + valence, capped at 0.15 total", async () => {
+    const { ctx, dbPath } = makeContext({
+      brain: { arousalModulation: true, affect: true },
+      autoCapture: true,
+    });
+    const hooks = await realmemoryPlugin(ctx);
+
+    const store = new MemoryStore({
+      projectId: "test", storagePath: dbPath, embeddingMode: "keyword",
+    } as Record<string, unknown>);
+    await store.init();
+    await store.store({
+      content: "lesson", type: "lesson_learned", scope: "global",
+      confidence: 0.9, tags: [], metadata: { command: "test" },
+    });
+    await store.setMeta(
+      "affect:v1",
+      JSON.stringify({
+        aws: { valence: -1, arousal: 0.8, n: 5, updatedAt: "2026-08-19T00:00:00Z" },
+      }),
+    );
+    await buildCacheAndWait(hooks);
+
+    // Build arousal to 1.0 via 3 corrections.
+    const eventHandler = hooks["event"] as Function;
+    const chatHandler = hooks["chat.message"] as Function;
+    for (let i = 0; i < 3; i++) {
+      chatHandler(
+        { sessionID: "test-sess" },
+        { message: { role: "user" }, parts: [{ type: "text", text: "actually no" }] },
+      );
+      await eventHandler({ event: { type: "session.idle", properties: { sessionID: "test-sess" } } });
+    }
+    // Let the 3 idle detached blocks (which clear lastToolCapture) settle.
+    await new Promise((r) => setTimeout(r, 150));
+
+    // Set lastToolCapture to an aws config file (tsconfig.json under terraform).
+    const after = hooks["tool.execute.after"] as Function;
+    after(
+      { tool: "read", args: { filePath: "/projects/realhax/terraform/tsconfig.json" } },
+      { output: "ok" },
+    );
+    // Wait for the detached tool.execute.after + prior session.idle blocks to settle.
+    await new Promise((r) => setTimeout(r, 200));
+
+    const handler = hooks["chat.params"] as Function;
+    const out = { temperature: 0.9 };
+    handler({}, out);
+    // arousal 1.0 → 0.15; valence -1 → 0.15; combined capped at 0.15.
+    expect(out.temperature).toBeCloseTo(0.9 - 0.15, 5);
   });
 });
 

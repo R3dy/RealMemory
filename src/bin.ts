@@ -5,6 +5,7 @@ import { loadConfig } from "./config";
 import { MemoryStore } from "./store";
 import { printDoctorTable } from "./hook-probe";
 import { parseResetScope, resetTraits, TRAITS_META_KEY } from "./traits";
+import { resetAffect } from "./affect";
 
 /**
  * Parse the --ui / --port / --no-browser / --doctor / --reset-self flags from
@@ -100,13 +101,14 @@ if (resetSelf) {
         }
       }
       if (scope === "affect" || scope === "all") {
-        // Phase 11 will own `affect:v1`. For now, clear the meta key if present
-        // (forward-compatible no-op when the key does not exist).
         try {
-          await store.setMeta("affect:v1", "");
-          report.push("affect: cleared (Phase 11 not yet shipped — no-op if empty)");
+          const before = await store.getMeta("affect:v1");
+          await resetAffect(store);
+          report.push(
+            `affect: reset to empty${before ? ` (was ${before.length} bytes)` : " (was empty — no-op)"}`,
+          );
         } catch {
-          // Fire-safe.
+          report.push("affect: reset attempted (non-fatal)");
         }
       }
       if (scope === "identity" || scope === "all") {

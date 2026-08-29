@@ -348,6 +348,93 @@ describe("buildReflexCache", () => {
     expect(cache.rules[0].note).toContain("High weight");
   });
 
+  it("Phase 11: lowers the weight floor for negative-valence domains (recall bias)", async () => {
+    const store = new MemoryStore({
+      projectId: "test",
+      storagePath: uniqueDbPath(),
+      embeddingMode: "keyword",
+    } as Record<string, unknown>);
+    await store.init();
+
+    // A low-weight aws lesson — below the 0.3 floor normally, but above the
+    // biased floor (0.15) when affect lowers it. store sets weight from
+    // confidence × recency, so confidence 0.5 → weight ~0.16.
+    await store.store({
+      content: "aws ec2 launch fails with InvalidParameterValue",
+      type: "lesson_learned",
+      scope: "project",
+      confidence: 0.5,
+      tags: [],
+      domain: "aws",
+      metadata: { command: "aws ec2 run-instances" },
+    });
+
+    // Without affect: the lesson is below the floor → no rule.
+    const cacheNoBias = await buildReflexCache(store);
+    expect(cacheNoBias.rules.length).toBe(0);
+
+    // With sustained-negative affect on aws: floor lowers → the lesson surfaces.
+    const affect = {
+      aws: { valence: -1, arousal: 0.8, n: 5, updatedAt: "2026-08-19T00:00:00Z" },
+    };
+    const cacheBiased = await buildReflexCache(store, affect);
+    expect(cacheBiased.rules.length).toBe(1);
+    expect(cacheBiased.rules[0].note).toContain("aws ec2");
+  });
+
+  it("Phase 11: positive/neutral valence does not lower the floor", async () => {
+    const store = new MemoryStore({
+      projectId: "test",
+      storagePath: uniqueDbPath(),
+      embeddingMode: "keyword",
+    } as Record<string, unknown>);
+    await store.init();
+
+    await store.store({
+      content: "low weight testing lesson",
+      type: "lesson_learned",
+      scope: "project",
+      confidence: 0.2,
+      tags: [],
+      domain: "testing",
+      metadata: { command: "vitest run" },
+    });
+
+    // Positive valence → no lowering → still below floor.
+    const affect = {
+      testing: { valence: 0.5, arousal: 0.2, n: 5, updatedAt: "2026-08-19T00:00:00Z" },
+    };
+    const cache = await buildReflexCache(store, affect);
+    expect(cache.rules.length).toBe(0);
+  });
+
+  it("Phase 11: dedupes memories surfaced by both the main + biased search", async () => {
+    const store = new MemoryStore({
+      projectId: "test",
+      storagePath: uniqueDbPath(),
+      embeddingMode: "keyword",
+    } as Record<string, unknown>);
+    await store.init();
+
+    // A high-weight aws lesson (above floor) — surfaced by BOTH searches.
+    await store.store({
+      content: "high weight aws lesson",
+      type: "lesson_learned",
+      scope: "project",
+      confidence: 0.8,
+      tags: [],
+      domain: "aws",
+      metadata: { command: "aws s3 cp" },
+    });
+
+    const affect = {
+      aws: { valence: -1, arousal: 0.8, n: 5, updatedAt: "2026-08-19T00:00:00Z" },
+    };
+    const cache = await buildReflexCache(store, affect);
+    // Must appear exactly once (dedup by id).
+    expect(cache.rules.length).toBe(1);
+  });
+
   it("caps rules at REFLEX_RULE_CAP (100)", async () => {
     // This test verifies the cap logic, but we can't seed 200 memories quickly
     // in a test. Instead, verify the cap constant and the slice logic.

@@ -214,7 +214,7 @@ async function handleRequest(
   if (pathname === "/version") {
     // Keep in sync with SERVER_VERSION in src/mcp-server.ts (single source of
     // truth for the package version — no import to avoid a circular dep).
-    sendJson(res, 200, { version: "0.19.0" });
+    sendJson(res, 200, { version: "0.20.0" });
     return;
   }
 

@@ -75,11 +75,14 @@ declare function computeWeight(memory: Pick<Memory, "createdAt" | "accessCount" 
 /**
  * Recency factor using exponential decay.
  * recencyFactor = exp(-ageDays / halfLifeDays)
- * A 0-day-old memory → factor = 1.0
- * A memory aged halfLifeDays → factor = exp(-1) ≈ 0.368
- * A memory aged 2*halfLifeDays → factor = exp(-2) ≈ 0.135
+ * A 0-day-old memory -> factor = 1.0
+ * A memory aged halfLifeDays -> factor = exp(-1) ~= 0.368
+ * A memory aged 2*halfLifeDays -> factor = exp(-2) ~= 0.135
+ *
+ * @param now Optional reference time (defaults to Date.now()). Injected by
+ *            callers that need deterministic decay (e.g. affect decay tests).
  */
-declare function computeRecencyFactor(createdAt: string, halfLifeDays: number): number;
+declare function computeRecencyFactor(createdAt: string, halfLifeDays: number, now?: Date): number;
 /**
  * Frequency factor using logarithmic scaling (diminishing returns) with a 0.5 baseline.
  * frequencyFactor = 0.5 + 0.5 * (log(1 + accessCount + reinforcementCount) / log(1 + maxExpected))
