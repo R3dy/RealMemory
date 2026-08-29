@@ -352,6 +352,25 @@ function ConnectionChip() {
 
 /** Top HUD Bar — design.md §7.1. Sticky, 60px, glass. */
 export default function Navbar() {
+  // Live version badge — fetched from the backend /version route
+  // (single source: src/version.ts). Degrades to no suffix on failure.
+  const [appVersion, setAppVersion] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    fetch("/version")
+      .then((r) => r.json())
+      .then((d: { version?: string }) => {
+        if (alive && typeof d.version === "string" && d.version.length > 0) {
+          setAppVersion(d.version);
+        }
+      })
+      .catch(() => {
+        /* backend unavailable — badge shows plain label */
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
   return (
     <header className="sticky top-0 z-50 flex h-[60px] w-full items-center gap-4 border-b border-panel-border bg-[rgba(8,20,38,0.55)] px-4 backdrop-blur-[14px]">
       {/* Logo + wordmark */}
@@ -359,7 +378,7 @@ export default function Navbar() {
         <img src="/logo.svg" alt="RealMemory" className="animate-spin-slow h-8 w-8" />
         <span className="hidden flex-col leading-tight sm:flex">
           <span className="font-display text-[13px] font-black text-hi">REALMEMORY</span>
-          <span className="micro-label">Neural Interface v0.13.0</span>
+          <span className="micro-label">Neural Interface{appVersion ? ` v${appVersion}` : ""}</span>
         </span>
       </Link>
 

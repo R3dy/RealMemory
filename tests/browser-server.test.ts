@@ -108,7 +108,7 @@ describe("browser server — UI serving (issue #46)", () => {
     expect(JSON.parse(res.body)).toEqual({ ok: true });
   });
 
-  it("GET /version returns 200 with { version: \"0.19.0\" }", async () => {
+  it("GET /version returns 200 with the package version", async () => {
     const res = await request("/version");
     expect(res.status).toBe(200);
     expect(res.contentType).toContain("application/json");

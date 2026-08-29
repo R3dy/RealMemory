@@ -2,7 +2,7 @@
 import {
   startBrowserServer,
   startMcpServer
-} from "./chunk-W7HBQ2Z4.js";
+} from "./chunk-DTIS7THD.js";
 import {
   printDoctorTable
 } from "./chunk-VYNGJSQW.js";

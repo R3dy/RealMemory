@@ -12,6 +12,9 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 
+// src/version.ts
+var VERSION = "0.20.0";
+
 // src/browser/server.ts
 import { createServer } from "http";
 import { fileURLToPath } from "url";
@@ -124,7 +127,7 @@ async function handleRequest(req, res, store, uiDir) {
     return;
   }
   if (pathname === "/version") {
-    sendJson(res, 200, { version: "0.20.0" });
+    sendJson(res, 200, { version: VERSION });
     return;
   }
   if (pathname === "/api/stats") {
@@ -674,7 +677,6 @@ function createMcpTools(store) {
   ];
 }
 var SERVER_NAME = "realmemory";
-var SERVER_VERSION = "0.20.0";
 async function startMcpServer(config, opts) {
   const mergedConfig = config ?? loadConfig();
   const ownLifecycle = opts?.ownLifecycle ?? false;
@@ -682,7 +684,7 @@ async function startMcpServer(config, opts) {
   await store.init();
   const tools = createMcpTools(store);
   const server = new Server(
-    { name: SERVER_NAME, version: SERVER_VERSION },
+    { name: SERVER_NAME, version: VERSION },
     { capabilities: { tools: {} } }
   );
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -746,6 +748,7 @@ async function startMcpServer(config, opts) {
 }
 
 export {
+  VERSION,
   startBrowserServer,
   createMcpTools,
   startMcpServer

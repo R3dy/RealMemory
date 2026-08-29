@@ -2,13 +2,14 @@ import { describe, it, expect } from "vitest";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { VERSION as SRC_VERSION } from "../src/version";
 
 describe("fresh-project smoke test", () => {
   it("can import and use MemoryStore from dist", async () => {
     // Import from the built output, not source — verifies the package
     // exports work against the published artifact.
     const { MemoryStore, VERSION } = await import("../dist/index.js");
-    expect(VERSION).toBe("0.6.0");
+    expect(VERSION).toBe(SRC_VERSION);
 
     const dir = mkdtempSync(join(tmpdir(), "realmemory-smoke-"));
     const store = new MemoryStore({
@@ -33,7 +34,7 @@ describe("fresh-project smoke test", () => {
 
   it("exports the full public API surface from dist", async () => {
     const mod = await import("../dist/index.js");
-    expect(mod.VERSION).toBe("0.6.0");
+    expect(mod.VERSION).toBe(SRC_VERSION);
     expect(typeof mod.MemoryStore).toBe("function");
     expect(typeof mod.RecallEngine).toBe("function");
     expect(typeof mod.loadConfig).toBe("function");
