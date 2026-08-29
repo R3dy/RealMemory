@@ -7,10 +7,12 @@ import type { Server } from "node:http";
 import { MemoryStore } from "../src/store";
 import { startBrowserServer } from "../src/browser/server";
 import { generateUlid } from "../src/db/ulid";
+import { VERSION } from "../src/version";
 
 let tempDir: string;
 let server: Server;
 let port: number;
+let harnessStore: MemoryStore;
 
 function uniqueDbPath(): string {
   return join(tempDir, `test-${generateUlid()}.db`);
@@ -51,8 +53,8 @@ function request(path: string, method = "GET"): Promise<{ status: number; body: 
 beforeEach(async () => {
   tempDir = mkdtempSync(join(tmpdir(), "realmemory-bs-"));
   port = 20000 + Math.floor(Math.random() * 10000);
-  const store = await freshStore();
-  server = startBrowserServer(store, { port });
+  harnessStore = await freshStore();
+  server = startBrowserServer(harnessStore, { port });
   // Wait for the server to be listening.
   await new Promise<void>((resolve) => server.once("listening", resolve));
 });
@@ -112,7 +114,8 @@ describe("browser server — UI serving (issue #46)", () => {
     const res = await request("/version");
     expect(res.status).toBe(200);
     expect(res.contentType).toContain("application/json");
-    expect(JSON.parse(res.body)).toEqual({ version: "0.20.0" });
+    // Single source (issue #60/#62): read the literal, never hardcode it.
+    expect(JSON.parse(res.body)).toEqual({ version: VERSION });
   });
 
   it("GET /api/stats returns 200 with the stats shape", async () => {
@@ -167,5 +170,27 @@ describe("browser server — UI serving (issue #46)", () => {
     expect(res.status).toBe(200); // SPA fallback serves index.html
     expect(res.contentType).toContain("text/html");
     expect(res.body).not.toContain("root:"); // not /etc/passwd content
+  });
+});
+
+describe("GET /api/brain/state — lastSeq (issue #62)", () => {
+  it("exposes the tape's MAX(seq) so the client can seed its SSE tail", async () => {
+    await harnessStore.insertBrainEvents([
+      { kind: "predict.made", payload: {}, emittedAt: new Date().toISOString() },
+      { kind: "predict.resolved", payload: {}, emittedAt: new Date().toISOString() },
+    ]);
+    const res = await request("/api/brain/state");
+    expect(res.status).toBe(200);
+    const body = JSON.parse(res.body) as { lastSeq?: number };
+    expect(typeof body.lastSeq).toBe("number");
+    expect(body.lastSeq).toBe(2);
+    expect(await harnessStore.getLastBrainEventSeq()).toBe(2);
+  });
+
+  it("returns lastSeq 0 on an empty tape", async () => {
+    const res = await request("/api/brain/state");
+    expect(res.status).toBe(200);
+    const body = JSON.parse(res.body) as { lastSeq?: number };
+    expect(body.lastSeq).toBe(0);
   });
 });
