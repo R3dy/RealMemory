@@ -348,12 +348,6 @@ declare class MemoryStore {
      */
     capBrainEvents(retention: number): Promise<number>;
     /**
-     * Max seq in brain_events (0 when the table is empty). Read-only, O(1) via
-     * the seq index. Used by the UI's `GET /api/brain/state` snapshot so the
-     * client can seed its SSE tail position and never replay the tape (issue #62).
-     */
-    getLastBrainEventSeq(): Promise<number>;
-    /**
      * Read brain events with `seq > afterSeq`, ascending, limited. Used by the
      * UI server's `GET /api/stream` SSE endpoint to tail the event tape.
      *
@@ -387,7 +381,6 @@ declare class MemoryStore {
         lastArousal: number | null;
         lastWmAssembled: Record<string, unknown> | null;
         eventCount: number;
-        lastSeq: number;
     }>;
     /**
      * Bloat ratio: fraction of active memories with weight below

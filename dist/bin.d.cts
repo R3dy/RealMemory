@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { parseResetScope } from './traits.cjs';
-import './store-BVMD64Ou.cjs';
+import './store-C7A06i_s.cjs';
 import './types.cjs';
 
 /**
