@@ -1,5 +1,5 @@
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
-import { M as MemoryStore } from './store-C7A06i_s.cjs';
+import { M as MemoryStore } from './store-BVMD64Ou.cjs';
 import { MemoryStoreConfig } from './types.cjs';
 
 /** A single MCP tool descriptor: name, description, JSON-Schema input, and handler. */
