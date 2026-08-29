@@ -1,7 +1,7 @@
 import {
   MemoryStore,
   loadConfig
-} from "./chunk-ASX5J2YN.js";
+} from "./chunk-5VKJEIRO.js";
 
 // src/mcp-server.ts
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -13,7 +13,7 @@ import {
 import { z } from "zod";
 
 // src/version.ts
-var VERSION = "0.20.0";
+var VERSION = "0.20.1";
 
 // src/browser/server.ts
 import { createServer } from "http";

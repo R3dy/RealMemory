@@ -1981,6 +1981,20 @@ var MemoryStore = class {
     }
   }
   /**
+   * Max seq in brain_events (0 when the table is empty). Read-only, O(1) via
+   * the seq index. Used by the UI's `GET /api/brain/state` snapshot so the
+   * client can seed its SSE tail position and never replay the tape (issue #62).
+   */
+  async getLastBrainEventSeq() {
+    if (!this.db) return 0;
+    try {
+      const row = this.db.prepare("SELECT MAX(seq) AS s FROM brain_events").get();
+      return row?.s ?? 0;
+    } catch {
+      return 0;
+    }
+  }
+  /**
    * Read brain events with `seq > afterSeq`, ascending, limited. Used by the
    * UI server's `GET /api/stream` SSE endpoint to tail the event tape.
    *
@@ -2015,7 +2029,8 @@ var MemoryStore = class {
         reflexRuleCount: 0,
         lastArousal: null,
         lastWmAssembled: null,
-        eventCount: 0
+        eventCount: 0,
+        lastSeq: 0
       };
     }
     const lastRow = this.db.prepare(
@@ -2064,7 +2079,8 @@ var MemoryStore = class {
       reflexRuleCount: ruleRow?.c ?? 0,
       lastArousal,
       lastWmAssembled,
-      eventCount
+      eventCount,
+      lastSeq: await this.getLastBrainEventSeq()
     };
   }
   /**
@@ -2167,7 +2183,7 @@ var MemoryStore = class {
 };
 
 // src/version.ts
-var VERSION = "0.20.0";
+var VERSION = "0.20.1";
 
 // src/browser/server.ts
 var import_node_http = require("http");
