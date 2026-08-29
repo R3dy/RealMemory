@@ -4,6 +4,19 @@ import { M as MemoryStore } from './store-C7A06i_s.cjs';
 export { McpToolHandler, createMcpTools, startMcpServer } from './mcp-server.cjs';
 import '@modelcontextprotocol/sdk/types.js';
 
+/**
+ * Single source of truth for the realmemory package version.
+ *
+ * This module must import NOTHING — it is the version leaf. Every surface
+ * that needs the version (public API export in src/index.ts, MCP serverInfo
+ * in src/mcp-server.ts, the /version HTTP route in src/browser/server.ts)
+ * imports from here, so the value cannot drift between surfaces.
+ *
+ * The drift-guard test (tests/version-single-source.test.ts) asserts this
+ * value matches package.json.version and ui/package.json.version.
+ */
+declare const VERSION = "0.20.0";
+
 /** Thrown when a feature is referenced but not yet implemented. */
 declare class NotImplementedError extends Error {
     constructor(message: string);
@@ -216,8 +229,5 @@ declare function dynamicLimit(intent: Intent): number;
  * No LLM call anywhere (local heuristics only — INV-017, avoids Drift #5).
  */
 declare function evaluateDelta(store: MemoryStore, state: BrainLoopState, userText: string, assistantText: string): Promise<void>;
-
-/** Semver version of the realmemory package. */
-declare const VERSION = "0.6.0";
 
 export { type BrainLoopState, DuplicateRelationshipError, type EmbeddingProvider, type Intent, InvalidConfidenceError, InvalidTypeError, Memory, MemoryNotFoundError, MemoryStore, MemoryStoreConfig, MemoryStoreError, NotImplementedError, RecallEngine, RecallQuery, RecallResult, SelfRelationshipError, type ToolCapture, VERSION, classifyIntent, computeFrequencyFactor, computeRecencyFactor, computeWeight, cosineSimilarity, createEmbeddingProvider, deriveProjectId, dynamicLimit, embeddingFromBuffer, embeddingToBuffer, evaluateDelta, isHighSignal, loadConfig, scrubSecrets, validateConfig };

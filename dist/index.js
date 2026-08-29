@@ -1,7 +1,8 @@
 import {
+  VERSION,
   createMcpTools,
   startMcpServer
-} from "./chunk-W7HBQ2Z4.js";
+} from "./chunk-DTIS7THD.js";
 import {
   classifyIntent,
   deriveProjectId,
@@ -49,9 +50,6 @@ var RecallEngine = class {
     return this.store.recall(query);
   }
 };
-
-// src/index.ts
-var VERSION = "0.6.0";
 export {
   DuplicateRelationshipError,
   InvalidConfidenceError,

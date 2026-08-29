@@ -8,6 +8,7 @@ import {
 import { z } from "zod";
 import type { Server as NodeHttpServer } from "node:http";
 import { MemoryStore } from "./store";
+import { VERSION as SERVER_VERSION } from "./version";
 import { loadConfig } from "./config";
 import { startBrowserServer } from "./browser/server";
 import type { MemoryStoreConfig, RelationshipType } from "./types";
@@ -354,7 +355,7 @@ export function createMcpTools(store: MemoryStore): McpToolHandler[] {
 // ---------------------------------------------------------------------------
 
 const SERVER_NAME = "realmemory";
-const SERVER_VERSION = "0.20.0";
+// SERVER_VERSION comes from src/version.ts (single source of truth) via import above.
 
 /**
  * Start the realmemory MCP server on stdio. Loads config (or accepts an

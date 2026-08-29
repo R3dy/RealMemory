@@ -2164,6 +2164,9 @@ var MemoryStore = class {
   }
 };
 
+// src/version.ts
+var VERSION = "0.20.0";
+
 // src/browser/server.ts
 var import_node_http = require("http");
 var import_node_url = require("url");
@@ -2277,7 +2280,7 @@ async function handleRequest(req, res, store, uiDir) {
     return;
   }
   if (pathname === "/version") {
-    sendJson(res, 200, { version: "0.20.0" });
+    sendJson(res, 200, { version: VERSION });
     return;
   }
   if (pathname === "/api/stats") {
@@ -2827,7 +2830,6 @@ function createMcpTools(store) {
   ];
 }
 var SERVER_NAME = "realmemory";
-var SERVER_VERSION = "0.20.0";
 async function startMcpServer(config, opts) {
   const mergedConfig = config ?? loadConfig();
   const ownLifecycle = opts?.ownLifecycle ?? false;
@@ -2835,7 +2837,7 @@ async function startMcpServer(config, opts) {
   await store.init();
   const tools = createMcpTools(store);
   const server = new import_server.Server(
-    { name: SERVER_NAME, version: SERVER_VERSION },
+    { name: SERVER_NAME, version: VERSION },
     { capabilities: { tools: {} } }
   );
   server.setRequestHandler(import_types.ListToolsRequestSchema, async () => ({

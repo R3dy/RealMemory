@@ -4,6 +4,7 @@ import { dirname, join, normalize, extname } from "node:path";
 import { readFileSync, existsSync } from "node:fs";
 import type { MemoryStore } from "../store";
 import type { Memory, Relationship, MemoryType } from "../types";
+import { VERSION } from "../version";
 
 /**
  * A directed edge in the graph payload, with `source`/`target` naming that
@@ -212,9 +213,9 @@ async function handleRequest(
   }
 
   if (pathname === "/version") {
-    // Keep in sync with SERVER_VERSION in src/mcp-server.ts (single source of
-    // truth for the package version — no import to avoid a circular dep).
-    sendJson(res, 200, { version: "0.20.0" });
+    // Served from src/version.ts — the single source of truth (imported, no
+    // literal here: version.ts imports nothing, so no circular dep exists).
+    sendJson(res, 200, { version: VERSION });
     return;
   }
 
