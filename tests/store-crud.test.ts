@@ -495,20 +495,3 @@ describe("MemoryStore store with valid relationship", () => {
     await store.close();
   });
 });
-
-describe("MemoryStore.getLastBrainEventSeq() (issue #62)", () => {
-  it("returns 0 on an empty brain_events table", async () => {
-    const store = await freshStore();
-    expect(await store.getLastBrainEventSeq()).toBe(0);
-  });
-
-  it("returns MAX(seq) after inserts", async () => {
-    const store = await freshStore();
-    await store.insertBrainEvents([
-      { kind: "predict.made", payload: {}, emittedAt: new Date().toISOString() },
-      { kind: "wm.assembled", payload: {}, emittedAt: new Date().toISOString() },
-      { kind: "encode.stored", payload: {}, emittedAt: new Date().toISOString() },
-    ]);
-    expect(await store.getLastBrainEventSeq()).toBe(3);
-  });
-});

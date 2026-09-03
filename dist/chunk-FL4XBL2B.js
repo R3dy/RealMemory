@@ -1,6 +1,18 @@
 import {
   generateUlid
-} from "./chunk-5VKJEIRO.js";
+} from "./chunk-ASX5J2YN.js";
+
+// src/system-prompt.ts
+function appendToSystemLast(system, block) {
+  if (!Array.isArray(system)) return;
+  if (block === "") return;
+  if (system.length === 0) {
+    system.push(block);
+    return;
+  }
+  const last = system.length - 1;
+  system[last] = system[last] + "\n\n" + block;
+}
 
 // src/hook-probe.ts
 var ALWAYS_FIRE_HOOKS = [
@@ -83,8 +95,8 @@ function pushSentinel(probe, output) {
   if (!Array.isArray(sys)) {
     return { pushed: true, assertionOk: false };
   }
-  sys.push(token);
-  const assertionOk = sys.includes(token);
+  appendToSystemLast(sys, token);
+  const assertionOk = sys.some((s) => s.includes(token));
   return { pushed: true, assertionOk };
 }
 async function checkSentinelLanded(store, probe, fetchTranscript) {
@@ -375,6 +387,7 @@ DEGRADED: the following always-fire hooks registered 0 fires despite
 }
 
 export {
+  appendToSystemLast,
   createProbeState,
   resetProbeForSession,
   resolveHostVersion,

@@ -1,6 +1,6 @@
 import { MemoryStoreConfig, Memory, RecallQuery, RecallResult } from './types.cjs';
 export { ForgetResult, ListQuery, ListResult, MemoryCategory, MemoryMetadata, MemoryScope, MemorySource, MemoryType, MemoryWithRelations, Relationship, RelationshipEdge, RelationshipInput, RelationshipType, SearchQuery, SearchResult, StoreInput, SummaryProviderConfig, UpdatePatch } from './types.cjs';
-import { M as MemoryStore } from './store-BVMD64Ou.cjs';
+import { M as MemoryStore } from './store-C7A06i_s.cjs';
 export { McpToolHandler, createMcpTools, startMcpServer } from './mcp-server.cjs';
 import '@modelcontextprotocol/sdk/types.js';
 
@@ -15,7 +15,7 @@ import '@modelcontextprotocol/sdk/types.js';
  * The drift-guard test (tests/version-single-source.test.ts) asserts this
  * value matches package.json.version and ui/package.json.version.
  */
-declare const VERSION = "0.20.1";
+declare const VERSION = "0.20.2";
 
 /** Thrown when a feature is referenced but not yet implemented. */
 declare class NotImplementedError extends Error {

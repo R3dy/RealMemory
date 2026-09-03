@@ -2,7 +2,7 @@ import {
   VERSION,
   createMcpTools,
   startMcpServer
-} from "./chunk-TKY4VEZD.js";
+} from "./chunk-Z3UJCH3B.js";
 import {
   classifyIntent,
   deriveProjectId,
@@ -23,7 +23,7 @@ import {
   loadConfig,
   scrubSecrets,
   validateConfig
-} from "./chunk-5VKJEIRO.js";
+} from "./chunk-ASX5J2YN.js";
 import {
   computeFrequencyFactor,
   computeRecencyFactor,
