@@ -9,4 +9,4 @@
  * The drift-guard test (tests/version-single-source.test.ts) asserts this
  * value matches package.json.version and ui/package.json.version.
  */
-export const VERSION = "0.20.0";
+export const VERSION = "0.20.2";

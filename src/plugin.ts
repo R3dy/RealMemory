@@ -30,6 +30,7 @@ import {
   checkSentinelLanded,
   type ProbeState,
 } from "./hook-probe";
+import { appendToSystemLast } from "./system-prompt";
 import {
   buildReflexCache,
   matchCall,
@@ -1653,7 +1654,9 @@ export default async function realmemoryPlugin(
         // Phase 3 disabled — deliver pendingWarnNote independently (C2 fix).
         // Warn-note delivery is gated by brain.inhibition, NOT brain.workingMemory.
         if (state.pendingWarnNote) {
-          output.system.push(state.pendingWarnNote);
+          // issue #64: merge into the last system element — a pushed element
+          // serializes as a second system message.
+          appendToSystemLast(output.system, state.pendingWarnNote);
           state.pendingWarnNote = null;
         }
         return;
@@ -1685,7 +1688,9 @@ export default async function realmemoryPlugin(
       );
 
       if (formatted) {
-        output.system.push(formatted);
+        // issue #64: merge into the last system element — a pushed element
+        // serializes as a second system message.
+        appendToSystemLast(output.system, formatted);
         // C3 fix: set lastInjectedMemoryIds from taskFrame IDs ONLY (not the union
         // of all slots). Preserves recall_hit_rate semantics.
         // 2-C6 fix: the chat.message staging-time write of lastInjectedMemoryIds

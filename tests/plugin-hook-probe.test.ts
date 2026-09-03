@@ -119,10 +119,14 @@ describe("plugin hook probe instrumentation", () => {
       output: { system: string[] },
     ) => Promise<void>)({}, { system });
 
-    // The sentinel should be in the system array.
+    // The sentinel should be IN the system array — merged into the last
+    // element since issue #64 (a pushed element would serialize as a second
+    // system message). The element containing the token also holds the base
+    // prompt text, so the match is containment-shaped, not anchored.
     const sentinel = system.find((s) => s.includes("realmemory-probe:"));
     expect(sentinel).toBeDefined();
-    expect(sentinel).toMatch(/^<!-- realmemory-probe:.* -->$/);
+    expect(sentinel).toMatch(/<!-- realmemory-probe:[0-9A-Z]+ -->/);
+    expect(system).toHaveLength(1); // issue #64: element count unchanged (merge, not push)
   });
 
   it("sentinel does NOT appear on the second transform fire in the same session", async () => {

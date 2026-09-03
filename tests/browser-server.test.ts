@@ -7,6 +7,7 @@ import type { Server } from "node:http";
 import { MemoryStore } from "../src/store";
 import { startBrowserServer } from "../src/browser/server";
 import { generateUlid } from "../src/db/ulid";
+import { VERSION } from "../src/version";
 
 let tempDir: string;
 let server: Server;
@@ -112,7 +113,9 @@ describe("browser server — UI serving (issue #46)", () => {
     const res = await request("/version");
     expect(res.status).toBe(200);
     expect(res.contentType).toContain("application/json");
-    expect(JSON.parse(res.body)).toEqual({ version: "0.20.0" });
+    // Single-sourced (issue #61): assert against src/version.ts so this test
+    // never needs touching on a version bump.
+    expect(JSON.parse(res.body)).toEqual({ version: VERSION });
   });
 
   it("GET /api/stats returns 200 with the stats shape", async () => {

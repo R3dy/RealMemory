@@ -2,7 +2,7 @@ import {
   VERSION,
   createMcpTools,
   startMcpServer
-} from "./chunk-DTIS7THD.js";
+} from "./chunk-Z3UJCH3B.js";
 import {
   classifyIntent,
   deriveProjectId,

@@ -14,6 +14,7 @@
  */
 
 import { generateUlid } from "./db/ulid";
+import { appendToSystemLast } from "./system-prompt";
 import type { MemoryStore } from "./store";
 
 // ---------------------------------------------------------------------------
@@ -185,8 +186,14 @@ export function recordLandsOutcome(
 
 /**
  * Called from inside experimental.chat.system.transform, ONCE per session
- * (guarded by probe.sentinelToken !== null). Pushes an HTML-comment sentinel
- * into output.system: `<!-- realmemory-probe:<ulid> -->`. Stashes the token.
+ * (guarded by probe.sentinelToken !== null). Merge-appends an HTML-comment
+ * sentinel into output.system: `<!-- realmemory-probe:<ulid> -->`. Stashes
+ * the token.
+ *
+ * Issue #64: the sentinel is MERGED into the LAST element of output.system
+ * (via appendToSystemLast, pushing only when the array is empty) — a pushed
+ * element serializes as a second system message, which strict chat templates
+ * reject.
  *
  * PURE synchronous state mutation (no store access, no IO). MUST be called
  * BEFORE the !pendingInjection early return.
@@ -194,8 +201,12 @@ export function recordLandsOutcome(
  * Returns { pushed, assertionOk }:
  *   pushed = true iff a sentinel was pushed THIS call (false on a second
  *            transform fire in the same session — once-per-session guard).
- *   assertionOk = true iff output.system.includes(token) held immediately
- *            after the push (proves the array contains the token at push time).
+ *   assertionOk = true iff SOME element of output.system CONTAINS the token
+ *            (element-containment via sys.some(s => s.includes(token))) —
+ *            issue #64 review round 1 C1: `sys.includes(token)` is element-
+ *            membership and returns FALSE once the token is merged into a
+ *            larger element, so containment is required to hold merged AND
+ *            standalone.
  */
 export function pushSentinel(
   probe: ProbeState,
@@ -211,12 +222,18 @@ export function pushSentinel(
 
   const sys = output?.system;
   if (!Array.isArray(sys)) {
-    // Can't push — host handed us a non-array. Record as a negative signal
+    // Can't merge — host handed us a non-array. Record as a negative signal
     // via the return value; the handler will call recordLandsOutcome.
     return { pushed: true, assertionOk: false };
   }
-  sys.push(token);
-  const assertionOk = sys.includes(token);
+  // issue #64: merge into the last system element — a pushed element
+  // serializes as a second system message.
+  appendToSystemLast(sys, token);
+  // Element-CONTAINMENT, not element-membership (issue #64 review round 1 C1):
+  // after the merge the token is part of a larger element, so
+  // sys.includes(token) would be false. some() + includes() holds merged AND
+  // standalone.
+  const assertionOk = sys.some((s) => s.includes(token));
   return { pushed: true, assertionOk };
 }
 

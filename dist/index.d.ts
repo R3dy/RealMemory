@@ -15,7 +15,7 @@ import '@modelcontextprotocol/sdk/types.js';
  * The drift-guard test (tests/version-single-source.test.ts) asserts this
  * value matches package.json.version and ui/package.json.version.
  */
-declare const VERSION = "0.20.0";
+declare const VERSION = "0.20.2";
 
 /** Thrown when a feature is referenced but not yet implemented. */
 declare class NotImplementedError extends Error {

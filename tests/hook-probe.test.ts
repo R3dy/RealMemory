@@ -203,6 +203,20 @@ describe("pushSentinel", () => {
     expect(r.assertionOk).toBe(true);
   });
 
+  it("merges the sentinel into a NON-EMPTY system array; assertionOk holds via containment (issue #64)", () => {
+    const probe = createProbeState();
+    const output = { system: ["You are an agent."] as string[] };
+
+    const r = pushSentinel(probe, output);
+    expect(r.pushed).toBe(true);
+    // Review round 1 C1: element-membership (sys.includes(token)) would be
+    // false after the merge; the assertion is element-CONTAINMENT.
+    expect(r.assertionOk).toBe(true);
+    expect(output.system).toHaveLength(1); // merged, not pushed — no second system message
+    expect(output.system[0]).toContain("You are an agent.");
+    expect(output.system[0]).toMatch(/<!-- realmemory-probe:[0-9A-Z]+ -->/);
+  });
+
   it("returns assertionOk=false when output.system silently drops the push (non-array)", () => {
     const probe = createProbeState();
     // Simulate a host that hands us a non-array (silently drops the push).

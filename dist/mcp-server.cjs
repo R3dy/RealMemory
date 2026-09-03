@@ -2165,7 +2165,7 @@ var MemoryStore = class {
 };
 
 // src/version.ts
-var VERSION = "0.20.0";
+var VERSION = "0.20.2";
 
 // src/browser/server.ts
 var import_node_http = require("http");

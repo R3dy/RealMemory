@@ -2,10 +2,10 @@
 import {
   startBrowserServer,
   startMcpServer
-} from "./chunk-DTIS7THD.js";
+} from "./chunk-Z3UJCH3B.js";
 import {
   printDoctorTable
-} from "./chunk-VYNGJSQW.js";
+} from "./chunk-FL4XBL2B.js";
 import {
   resetAffect
 } from "./chunk-UJBYGW3C.js";

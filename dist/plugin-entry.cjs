@@ -2944,6 +2944,18 @@ function inferDomainFromPath(filePath) {
   return null;
 }
 
+// src/system-prompt.ts
+function appendToSystemLast(system, block) {
+  if (!Array.isArray(system)) return;
+  if (block === "") return;
+  if (system.length === 0) {
+    system.push(block);
+    return;
+  }
+  const last = system.length - 1;
+  system[last] = system[last] + "\n\n" + block;
+}
+
 // src/hook-probe.ts
 var ALWAYS_FIRE_HOOKS = [
   "event:session.created",
@@ -3025,8 +3037,8 @@ function pushSentinel(probe, output) {
   if (!Array.isArray(sys)) {
     return { pushed: true, assertionOk: false };
   }
-  sys.push(token);
-  const assertionOk = sys.includes(token);
+  appendToSystemLast(sys, token);
+  const assertionOk = sys.some((s) => s.includes(token));
   return { pushed: true, assertionOk };
 }
 async function checkSentinelLanded(store, probe, fetchTranscript) {
@@ -4730,7 +4742,7 @@ async function realmemoryPlugin(ctx) {
       const brainConfig = state.config;
       if (brainConfig.brain?.workingMemory === false) {
         if (state.pendingWarnNote) {
-          output.system.push(state.pendingWarnNote);
+          appendToSystemLast(output.system, state.pendingWarnNote);
           state.pendingWarnNote = null;
         }
         return;
@@ -4755,7 +4767,7 @@ async function realmemoryPlugin(ctx) {
         state.sessionId ?? void 0
       );
       if (formatted) {
-        output.system.push(formatted);
+        appendToSystemLast(output.system, formatted);
         state.lastInjectedMemoryIds = state.workingMemory.taskFrame.memoryIds.slice(-5);
         deliveredMemoryIds.forEach((id) => state.injectedMemoryIds.add(id));
         recordWorkingMemoryMetrics(getStore, state.sessionId, state.workingMemory);

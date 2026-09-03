@@ -61,7 +61,7 @@ __export(index_exports, {
 module.exports = __toCommonJS(index_exports);
 
 // src/version.ts
-var VERSION = "0.20.0";
+var VERSION = "0.20.2";
 
 // src/errors.ts
 var NotImplementedError = class extends Error {

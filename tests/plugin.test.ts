@@ -713,8 +713,8 @@ describe("deduplication", () => {
         output: { system: string[] },
       ) => Promise<void>
     )({}, { system });
-    expect(system.length).toBe(3);
-    expect(system[2]).toContain("## Working memory");
+    expect(system.length).toBe(1);
+    expect(system[0]).toContain("## Working memory");
 
     // Phase 3: the working-memory window is rebuilt every turn (taskFrame
     // persists until overwritten by the next chat.message or cleared on
@@ -726,7 +726,7 @@ describe("deduplication", () => {
         output: { system: string[] },
       ) => Promise<void>
     )({}, { system: system2 });
-    expect(system2.length).toBe(2); // original + window (sentinel not re-pushed)
+    expect(system2.length).toBe(1); // issue #64: window merges into the original element (sentinel not re-delivered)
   });
 });
 
@@ -863,9 +863,9 @@ describe("system prompt injection", () => {
         output: { system: string[] },
       ) => Promise<void>
     )({}, { system });
-    expect(system.length).toBe(3);
-    expect(system[2]).toContain("## Working memory");
-    expect(system[2]).toContain("uses SQLite");
+    expect(system.length).toBe(1);
+    expect(system[0]).toContain("## Working memory");
+    expect(system[0]).toContain("uses SQLite");
 
     // Phase 3: the working-memory window persists across transforms (rebuilt
     // every turn from staged slot data). The second transform still has the window.
@@ -876,7 +876,7 @@ describe("system prompt injection", () => {
         output: { system: string[] },
       ) => Promise<void>
     )({}, { system: system2 });
-    expect(system2.length).toBe(2); // original + window (sentinel not re-pushed)
+    expect(system2.length).toBe(1); // issue #64: window merges into the original element (sentinel not re-delivered)
   });
 
   it("delivers chat.message recall results into output.system", async () => {
@@ -927,8 +927,8 @@ describe("system prompt injection", () => {
         output: { system: string[] },
       ) => Promise<void>
     )({}, { system });
-    expect(system.length).toBe(3);
-    expect(system[2]).toContain("REST conventions");
+    expect(system.length).toBe(1);
+    expect(system[0]).toContain("REST conventions");
   });
 });
 

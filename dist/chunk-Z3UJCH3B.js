@@ -13,7 +13,7 @@ import {
 import { z } from "zod";
 
 // src/version.ts
-var VERSION = "0.20.0";
+var VERSION = "0.20.2";
 
 // src/browser/server.ts
 import { createServer } from "http";

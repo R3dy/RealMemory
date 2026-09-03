@@ -1,4 +1,5 @@
 import {
+  appendToSystemLast,
   checkSentinelLanded,
   createProbeState,
   pushSentinel,
@@ -6,7 +7,7 @@ import {
   recordLandsOutcome,
   resetProbeForSession,
   resolveHostVersion
-} from "./chunk-VYNGJSQW.js";
+} from "./chunk-FL4XBL2B.js";
 import {
   getAffectBias,
   inferDomainFromPath,
@@ -1977,7 +1978,7 @@ async function realmemoryPlugin(ctx) {
       const brainConfig = state.config;
       if (brainConfig.brain?.workingMemory === false) {
         if (state.pendingWarnNote) {
-          output.system.push(state.pendingWarnNote);
+          appendToSystemLast(output.system, state.pendingWarnNote);
           state.pendingWarnNote = null;
         }
         return;
@@ -2002,7 +2003,7 @@ async function realmemoryPlugin(ctx) {
         state.sessionId ?? void 0
       );
       if (formatted) {
-        output.system.push(formatted);
+        appendToSystemLast(output.system, formatted);
         state.lastInjectedMemoryIds = state.workingMemory.taskFrame.memoryIds.slice(-5);
         deliveredMemoryIds.forEach((id) => state.injectedMemoryIds.add(id));
         recordWorkingMemoryMetrics(getStore, state.sessionId, state.workingMemory);
